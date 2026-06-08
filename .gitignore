@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.env
+data/
+server.*.log
+.pytest_cache/
+node_modules/

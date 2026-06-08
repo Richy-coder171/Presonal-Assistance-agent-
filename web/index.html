@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en" dir="ltr" translate="no">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Personal Assistant Agent</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <p class="eyebrow" data-i18n="company">Nofit LTD</p>
+        <h1 data-i18n="appTitle">Personal Assistant Agent</h1>
+      </div>
+
+      <div class="header-controls">
+        <div class="language-switch" aria-label="Language">
+          <button type="button" data-lang="en">EN</button>
+          <button type="button" data-lang="he">HE</button>
+        </div>
+
+        <nav class="toolbar" data-i18n-aria="actions">
+          <button type="button" data-action="refresh-email" data-i18n-title="refreshInbox">
+            <span class="button-icon" aria-hidden="true">&#9993;</span>
+            <span data-i18n="inbox">Inbox</span>
+          </button>
+          <button type="button" data-action="refresh-calendar" data-i18n-title="refreshCalendar">
+            <span class="button-icon" aria-hidden="true">&#9638;</span>
+            <span data-i18n="calendar">Calendar</span>
+          </button>
+          <button type="button" data-action="briefing" data-i18n-title="generateReport">
+            <span class="button-icon" aria-hidden="true">&#9776;</span>
+            <span data-i18n="report">Report</span>
+          </button>
+          <button type="button" data-action="send-briefing" data-i18n-title="sendReport">
+            <span class="button-icon" aria-hidden="true">&#8594;</span>
+            <span data-i18n="send">Send</span>
+          </button>
+          <button type="button" data-action="demo" data-i18n-title="loadDemoData">
+            <span class="button-icon" aria-hidden="true">&#9670;</span>
+            <span data-i18n="demo">Demo</span>
+          </button>
+        </nav>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel overview">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker" data-i18n="dailyReport">Daily Report</p>
+            <h2 data-i18n="morningBriefing">Morning Briefing</h2>
+          </div>
+          <span id="notice" class="notice" data-i18n="loading">Loading</span>
+        </div>
+        <div id="metrics" class="metrics" aria-live="polite"></div>
+        <div id="integrations" class="chips" aria-label="Integration status"></div>
+      </section>
+
+      <section class="panel briefing-panel">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker" data-i18n="report">Report</p>
+            <h2 data-i18n="dailyReport">Daily Report</h2>
+          </div>
+        </div>
+        <pre id="briefing-text" class="briefing-text">Loading</pre>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker" data-i18n="messages">Messages</p>
+            <h2 data-i18n="inbox">Inbox</h2>
+          </div>
+        </div>
+        <div id="email-list" class="list" aria-live="polite"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker" data-i18n="calendarConflicts">Calendar conflicts</p>
+            <h2 data-i18n="calendar">Calendar</h2>
+          </div>
+        </div>
+        <div id="calendar-list" class="list" aria-live="polite"></div>
+      </section>
+
+      <section class="panel task-panel">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker" data-i18n="openTasks">Open tasks</p>
+            <h2 data-i18n="tasks">Tasks</h2>
+          </div>
+        </div>
+        <form id="task-form" class="task-form">
+          <input name="title" type="text" data-i18n-placeholder="newTask" data-i18n-aria="newTask" required>
+          <input name="notes" type="text" data-i18n-placeholder="note" data-i18n-aria="note">
+          <select name="priority" data-i18n-aria="priority">
+            <option value="routine" data-i18n="routine">Routine</option>
+            <option value="important" data-i18n="important">Important</option>
+            <option value="urgent" data-i18n="urgent">Urgent</option>
+            <option value="fyi" data-i18n="fyi">FYI</option>
+          </select>
+          <input name="due_at" type="datetime-local" data-i18n-aria="dueDate">
+          <button type="submit" data-i18n-title="addTask" data-i18n-aria="addTask">
+            <span class="button-icon" aria-hidden="true">+</span>
+          </button>
+        </form>
+        <div id="task-list" class="list" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <script src="/i18n.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>
