@@ -5,9 +5,10 @@ import json
 import mimetypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .config import ROOT_DIR, Settings
+from .google_oauth import GoogleOAuthError
 from .service import AssistantService
 
 
@@ -21,6 +22,12 @@ class AssistantRequestHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/status":
             self._json(self.service.status())
+        elif path == "/api/connections":
+            self._json(self.service.connection_status())
+        elif path == "/oauth/google/start":
+            self._start_google_oauth()
+        elif path == "/oauth/google/callback":
+            self._complete_google_oauth()
         elif path == "/api/dashboard":
             self._json(self.service.dashboard())
         else:
@@ -53,6 +60,9 @@ class AssistantRequestHandler(BaseHTTPRequestHandler):
             self._json({"error": str(exc)}, status=400)
         except Exception as exc:  # noqa: BLE001 - report API errors to the dashboard.
             self._json({"error": str(exc)}, status=500)
+
+    def do_OPTIONS(self) -> None:
+        self._json({})
 
     def do_PATCH(self) -> None:
         path = urlparse(self.path).path
@@ -102,6 +112,43 @@ class AssistantRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _redirect(self, location: str) -> None:
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _start_google_oauth(self) -> None:
+        try:
+            self._redirect(
+                self.service.google_authorization_url(self._google_redirect_uri())
+            )
+        except GoogleOAuthError as exc:
+            self._redirect(f"/?oauth_error={quote(str(exc))}")
+
+    def _complete_google_oauth(self) -> None:
+        query = parse_qs(urlparse(self.path).query)
+        try:
+            self.service.complete_google_oauth(
+                code=_query_value(query, "code"),
+                state=_query_value(query, "state"),
+                error=_query_value(query, "error"),
+            )
+            self._redirect("/?oauth=success")
+        except GoogleOAuthError as exc:
+            self._redirect(f"/?oauth_error={quote(str(exc))}")
+        except Exception as exc:  # noqa: BLE001 - OAuth callback needs a visible UI error.
+            self._redirect(f"/?oauth_error={quote(str(exc))}")
+
+    def _google_redirect_uri(self) -> str:
+        if self.service.settings.google_redirect_uri:
+            return self.service.settings.google_redirect_uri
+        host = self.headers.get(
+            "Host",
+            f"{self.service.settings.host}:{self.service.settings.port}",
+        )
+        return f"http://{host}/oauth/google/callback"
+
     def _static(self, request_path: str) -> None:
         if request_path == "/":
             request_path = "/index.html"
@@ -142,6 +189,11 @@ def main() -> None:
         server.serve_forever()
     except KeyboardInterrupt:
         print("Shutting down")
+
+
+def _query_value(query: dict[str, list[str]], key: str) -> str:
+    values = query.get(key, [""])
+    return values[0] if values else ""
 
 
 if __name__ == "__main__":

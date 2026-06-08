@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from .ai import OpenAIAnalyzer
 from .classifier import build_briefing_text, classify_email, detect_conflicts, draft_hebrew_reply, summarize_email
 from .config import Settings
+from .google_oauth import GoogleOAuthManager, GoogleTokenStore
 from .http_client import HttpError
 from .models import CalendarEvent, DailyBriefing, EmailItem, TaskItem, new_id, now_iso
 from .providers import (
@@ -25,7 +26,10 @@ class AssistantService:
     def __init__(self, settings: Settings, store: StateStore | None = None) -> None:
         self.settings = settings
         self.store = store or StateStore(settings.data_path)
-        google = GoogleWorkspaceProvider(settings)
+        self.google_token_store = GoogleTokenStore(settings.google_token_path)
+        self.google_oauth = GoogleOAuthManager(settings, self.google_token_store)
+        google = GoogleWorkspaceProvider(settings, self.google_token_store)
+        self.google_provider = google
         microsoft = Microsoft365Provider(settings)
         self.email_providers: list[EmailProvider] = [google, microsoft]
         self.calendar_providers: list[CalendarProvider] = [google, microsoft]
@@ -38,10 +42,7 @@ class AssistantService:
         state = self.store.load()
         return {
             "configured": {
-                "gmail_or_google_calendar": any(
-                    provider.configured and provider.name == "Google Workspace"
-                    for provider in self.email_providers
-                ),
+                "gmail_or_google_calendar": self.google_provider.configured,
                 "outlook_or_microsoft_calendar": any(
                     provider.configured and provider.name == "Microsoft 365"
                     for provider in self.email_providers
@@ -49,6 +50,7 @@ class AssistantService:
                 "openai": self.analyzer.configured,
                 "messaging": self.messenger.configured,
             },
+            "connections": self.connection_status(),
             "counts": {
                 "emails": len(state["emails"]),
                 "events": len(state["events"]),
@@ -57,6 +59,38 @@ class AssistantService:
             },
             "demo_mode": self.settings.demo_mode,
             "timezone": self.settings.timezone,
+        }
+
+    def connection_status(self) -> dict:
+        google_status = self.google_oauth.connection_status()
+        return {
+            "gmail": {
+                "connected": google_status["gmail_connected"],
+                "read_only": True,
+            },
+            "calendar": {
+                "connected": google_status["calendar_connected"],
+                "read_only": True,
+            },
+            "openai": {
+                "connected": self.analyzer.configured,
+                "read_only": False,
+            },
+            "google_oauth_configured": google_status["oauth_configured"],
+        }
+
+    def google_authorization_url(self, redirect_uri: str) -> str:
+        return self.google_oauth.authorization_url(redirect_uri)
+
+    def complete_google_oauth(self, *, code: str, state: str, error: str = "") -> dict:
+        status = self.google_oauth.complete(code=code, state=state, error=error)
+        self._clear_demo_content()
+        email_result = self.refresh_emails()
+        calendar_result = self.refresh_calendar()
+        return {
+            "connections": status,
+            "emails": email_result,
+            "calendar": calendar_result,
         }
 
     def dashboard(self) -> dict:
@@ -100,13 +134,16 @@ class AssistantService:
                 errors.append({"provider": provider.name, "error": str(exc)})
 
         used_demo = False
-        if not incoming and self.settings.demo_mode:
+        if not incoming and self.settings.demo_mode and live_provider_count == 0:
             incoming = sample_emails(self.settings.timezone)
             used_demo = live_provider_count == 0
 
         analyzed = [self._analyze_email(item) for item in incoming]
         state = self.store.load()
-        state["emails"] = _merge_by_id([EmailItem.from_dict(item) for item in state["emails"]], analyzed, limit=80)
+        existing = [EmailItem.from_dict(item) for item in state["emails"]]
+        if live_provider_count > 0:
+            existing = [item for item in existing if item.source != "demo"]
+        state["emails"] = _merge_by_id(existing, analyzed, limit=80)
         self.store.save(state)
         self._create_tasks_from_emails(analyzed)
         return {"emails": [item.to_dict() for item in analyzed], "errors": errors, "used_demo": used_demo}
@@ -130,12 +167,15 @@ class AssistantService:
                 errors.append({"provider": provider.name, "error": str(exc)})
 
         used_demo = False
-        if not incoming and self.settings.demo_mode:
+        if not incoming and self.settings.demo_mode and live_provider_count == 0:
             incoming = sample_events(self.settings.timezone)
             used_demo = live_provider_count == 0
 
         state = self.store.load()
-        state["events"] = _merge_by_id([CalendarEvent.from_dict(item) for item in state["events"]], incoming, limit=120)
+        existing = [CalendarEvent.from_dict(item) for item in state["events"]]
+        if live_provider_count > 0:
+            existing = [item for item in existing if item.source != "demo"]
+        state["events"] = _merge_by_id(existing, incoming, limit=120)
         self.store.save(state)
         return {"events": [item.to_dict() for item in incoming], "conflicts": detect_conflicts(incoming), "errors": errors, "used_demo": used_demo}
 
@@ -278,6 +318,19 @@ class AssistantService:
         if new_tasks:
             state["tasks"] = [item.to_dict() for item in new_tasks] + state["tasks"]
             self.store.save(state)
+
+    def _clear_demo_content(self) -> None:
+        state = self.store.load()
+        state["emails"] = [
+            item for item in state["emails"] if item.get("source") != "demo"
+        ]
+        state["events"] = [
+            item for item in state["events"] if item.get("source") != "demo"
+        ]
+        state["tasks"] = [
+            item for item in state["tasks"] if item.get("source") != "demo"
+        ]
+        self.store.save(state)
 
 
 def _merge_by_id(existing: list, incoming: list, limit: int) -> list[dict]:

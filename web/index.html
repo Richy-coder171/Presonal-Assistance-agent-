@@ -45,6 +45,20 @@
     </header>
 
     <main class="layout">
+      <section class="panel connection-panel">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker" data-i18n="status">Status</p>
+            <h2 data-i18n="connectionStatus">Connection Status</h2>
+          </div>
+          <button type="button" class="connect-button" data-action="connect-google" data-i18n-title="connectGoogle">
+            <span class="button-icon" aria-hidden="true">G</span>
+            <span data-i18n="connectGoogle">Connect Google Account</span>
+          </button>
+        </div>
+        <div id="connection-list" class="connection-grid" aria-live="polite"></div>
+      </section>
+
       <section class="panel overview">
         <div class="section-head">
           <div>

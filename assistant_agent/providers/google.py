@@ -7,6 +7,12 @@ from typing import Any
 from urllib.parse import quote, urlencode
 
 from ..config import Settings
+from ..google_oauth import (
+    CALENDAR_READONLY_SCOPE,
+    GMAIL_READONLY_SCOPE,
+    GOOGLE_TOKEN_URL,
+    GoogleTokenStore,
+)
 from ..http_client import request_json
 from ..models import CalendarEvent, EmailItem, now_iso
 from .base import CalendarProvider, EmailProvider
@@ -15,19 +21,36 @@ from .base import CalendarProvider, EmailProvider
 class GoogleWorkspaceProvider(EmailProvider, CalendarProvider):
     name = "Google Workspace"
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, token_store: GoogleTokenStore | None = None) -> None:
         self.settings = settings
-        self._access_token: str | None = None
+        self.token_store = token_store or GoogleTokenStore(settings.google_token_path)
 
     @property
     def configured(self) -> bool:
         return bool(
             self.settings.google_access_token
+            or self.token_store.connected()
             or (
                 self.settings.google_client_id
                 and self.settings.google_client_secret
                 and self.settings.google_refresh_token
             )
+        )
+
+    @property
+    def gmail_connected(self) -> bool:
+        return bool(
+            self.settings.google_access_token
+            or self.settings.google_refresh_token
+            or self.token_store.has_scope(GMAIL_READONLY_SCOPE)
+        )
+
+    @property
+    def calendar_connected(self) -> bool:
+        return bool(
+            self.settings.google_access_token
+            or self.settings.google_refresh_token
+            or self.token_store.has_scope(CALENDAR_READONLY_SCOPE)
         )
 
     def list_recent_emails(self, limit: int = 25) -> list[EmailItem]:
@@ -66,24 +89,29 @@ class GoogleWorkspaceProvider(EmailProvider, CalendarProvider):
         return [_google_event_to_model(event) for event in payload.get("items", [])]
 
     def _token(self) -> str:
-        if self._access_token:
-            return self._access_token
         if self.settings.google_access_token:
-            self._access_token = self.settings.google_access_token
-            return self._access_token
+            return self.settings.google_access_token
+
+        stored_access_token = self.token_store.valid_access_token()
+        if stored_access_token:
+            return stored_access_token
+
+        refresh_token = self.token_store.refresh_token() or self.settings.google_refresh_token
+        if not refresh_token:
+            raise RuntimeError("Google account is not connected.")
 
         payload = request_json(
-            "https://oauth2.googleapis.com/token",
+            GOOGLE_TOKEN_URL,
             method="POST",
             form={
                 "client_id": self.settings.google_client_id,
                 "client_secret": self.settings.google_client_secret,
-                "refresh_token": self.settings.google_refresh_token,
+                "refresh_token": refresh_token,
                 "grant_type": "refresh_token",
             },
         )
-        self._access_token = payload["access_token"]
-        return self._access_token
+        self.token_store.save_token_response(payload)
+        return payload["access_token"]
 
 
 def _gmail_to_email(data: dict[str, Any]) -> EmailItem:
@@ -142,4 +170,3 @@ def _google_event_to_model(data: dict[str, Any]) -> CalendarEvent:
         location=data.get("location", ""),
         description=data.get("description", ""),
     )
-

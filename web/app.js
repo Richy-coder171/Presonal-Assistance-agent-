@@ -1,6 +1,7 @@
 const state = {
   dashboard: null,
   language: window.AssistantI18n.appLanguage(),
+  oauthNotice: readOAuthNotice(),
 };
 
 const priorityClass = {
@@ -26,6 +27,7 @@ function bindActions() {
   document.querySelector("[data-action='briefing']").addEventListener("click", () => runAction("/api/run/briefing"));
   document.querySelector("[data-action='send-briefing']").addEventListener("click", sendLatestBriefing);
   document.querySelector("[data-action='demo']").addEventListener("click", () => runAction("/api/demo/load"));
+  document.querySelector("[data-action='connect-google']").addEventListener("click", connectGoogle);
   document.querySelector("#task-form").addEventListener("submit", createTask);
 }
 
@@ -48,12 +50,21 @@ async function loadDashboard() {
   try {
     state.dashboard = await api("/api/dashboard");
     render();
-    setNotice(t("systemUpdated"));
+    if (state.oauthNotice) {
+      setNotice(state.oauthNotice.text, state.oauthNotice.isError);
+      state.oauthNotice = null;
+    } else {
+      setNotice(t("systemUpdated"));
+    }
   } catch (error) {
     setNotice(error.message, true);
   } finally {
     setBusy(false);
   }
+}
+
+function connectGoogle() {
+  window.location.assign("/oauth/google/start");
 }
 
 async function runAction(path) {
@@ -149,12 +160,51 @@ async function deleteTask(id) {
 
 function render() {
   const data = state.dashboard;
+  renderConnections(data.status.connections);
   renderMetrics(data.metrics);
   renderIntegrations(data.status.configured, data.status.demo_mode);
   renderEmails(data.emails);
   renderEvents(data.events, data.conflicts);
   renderTasks(data.tasks);
   renderBriefing(data.latest_briefing);
+}
+
+function renderConnections(connections) {
+  const target = document.querySelector("#connection-list");
+  const connectButton = document.querySelector("[data-action='connect-google']");
+  const googleConnected = connections.gmail.connected || connections.calendar.connected;
+  const connectLabelKey = googleConnected ? "reconnectGoogle" : "connectGoogle";
+  const connectLabel = connectButton.querySelector("[data-i18n]");
+  connectLabel.dataset.i18n = connectLabelKey;
+  connectLabel.textContent = t(connectLabelKey);
+  connectButton.setAttribute("title", t(connectLabelKey));
+  connectButton.dataset.disabled = String(!connections.google_oauth_configured);
+  connectButton.disabled = !connections.google_oauth_configured;
+
+  const rows = [
+    ["gmail", t("gmail"), connections.gmail.connected, connections.gmail.read_only],
+    ["calendar", t("googleCalendar"), connections.calendar.connected, connections.calendar.read_only],
+    ["openai", t("ai"), connections.openai.connected, connections.openai.read_only],
+  ];
+
+  target.innerHTML = rows.map(([id, label, connected, readOnly]) => `
+    <article class="connection-item ${connected ? "connected" : ""}" data-provider="${id}">
+      <div>
+        <strong>${escapeHtml(label)}</strong>
+        <p>${escapeHtml(readOnly ? t("readOnly") : t("status"))}</p>
+      </div>
+      <span class="status-pill ${connected ? "ok" : "neutral"}">
+        ${escapeHtml(connected ? t("connected") : t("notConnected"))}
+      </span>
+    </article>
+  `).join("");
+
+  if (!connections.google_oauth_configured) {
+    target.insertAdjacentHTML(
+      "beforeend",
+      `<div class="connection-warning">${escapeHtml(t("oauthConfigMissing"))}</div>`
+    );
+  }
 }
 
 function renderMetrics(metrics) {
@@ -295,7 +345,7 @@ async function api(path, options = {}) {
 function setBusy(isBusy) {
   document.body.classList.toggle("busy", isBusy);
   document.querySelectorAll("button").forEach((button) => {
-    button.disabled = isBusy;
+    button.disabled = isBusy || button.dataset.disabled === "true";
   });
 }
 
@@ -329,6 +379,21 @@ function dateLocale() {
 
 function t(key) {
   return window.AssistantI18n.appText(key, state.language);
+}
+
+function readOAuthNotice() {
+  const language = window.AssistantI18n.appLanguage();
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("oauth") === "success") {
+    window.history.replaceState({}, "", window.location.pathname);
+    return { text: window.AssistantI18n.appText("oauthSuccess", language), isError: false };
+  }
+  if (params.get("oauth_error")) {
+    const message = params.get("oauth_error");
+    window.history.replaceState({}, "", window.location.pathname);
+    return { text: `${window.AssistantI18n.appText("oauthFailed", language)}: ${message}`, isError: true };
+  }
+  return null;
 }
 
 function escapeHtml(value) {

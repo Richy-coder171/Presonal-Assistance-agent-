@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+from unittest.mock import patch
 
 from assistant_agent.classifier import classify_email, detect_conflicts
 from assistant_agent.config import Settings
+from assistant_agent.google_oauth import (
+    CALENDAR_READONLY_SCOPE,
+    GMAIL_READONLY_SCOPE,
+    GoogleOAuthManager,
+    GoogleTokenStore,
+)
 from assistant_agent.models import CalendarEvent, EmailItem
 from assistant_agent.service import AssistantService
 from assistant_agent.storage import StateStore
@@ -79,6 +88,62 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(result["sent"], [])
             self.assertEqual(result["errors"][0]["channel"], "approval")
 
+    def test_connection_status_uses_stored_google_scopes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            settings = replace(
+                _settings(base / "state.json"),
+                google_token_path=base / "tokens.json",
+                google_oauth_state_path=base / "oauth_state.json",
+            )
+            GoogleTokenStore(settings.google_token_path).save_token_response(
+                {
+                    "access_token": "access",
+                    "refresh_token": "refresh",
+                    "expires_in": 3600,
+                    "scope": f"{GMAIL_READONLY_SCOPE} {CALENDAR_READONLY_SCOPE}",
+                }
+            )
+            service = AssistantService(settings, StateStore(settings.data_path))
+            connections = service.connection_status()
+            self.assertTrue(connections["gmail"]["connected"])
+            self.assertTrue(connections["calendar"]["connected"])
+
+
+class GoogleOAuthTests(unittest.TestCase):
+    def test_authorization_url_uses_readonly_scopes_and_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = _google_settings(Path(directory))
+            manager = GoogleOAuthManager(settings)
+            url = manager.authorization_url("http://127.0.0.1:8765/oauth/google/callback")
+            query = parse_qs(urlparse(url).query)
+            scopes = set(query["scope"][0].split())
+            self.assertEqual(query["response_type"][0], "code")
+            self.assertEqual(query["access_type"][0], "offline")
+            self.assertIn(GMAIL_READONLY_SCOPE, scopes)
+            self.assertIn(CALENDAR_READONLY_SCOPE, scopes)
+            self.assertTrue(query["state"][0])
+
+    def test_oauth_callback_stores_tokens_without_network(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = _google_settings(Path(directory))
+            manager = GoogleOAuthManager(settings)
+            manager.authorization_url("http://127.0.0.1:8765/oauth/google/callback")
+            state = manager.state_store.load()["state"]
+            with patch(
+                "assistant_agent.google_oauth.request_json",
+                return_value={
+                    "access_token": "access",
+                    "refresh_token": "refresh",
+                    "expires_in": 3600,
+                    "scope": f"{GMAIL_READONLY_SCOPE} {CALENDAR_READONLY_SCOPE}",
+                },
+            ):
+                status = manager.complete(code="code", state=state)
+            self.assertTrue(status["gmail_connected"])
+            self.assertTrue(status["calendar_connected"])
+            self.assertEqual(GoogleTokenStore(settings.google_token_path).refresh_token(), "refresh")
+
 
 def _settings(path: Path) -> Settings:
     return Settings(
@@ -103,6 +168,17 @@ def _settings(path: Path) -> Settings:
         whatsapp_access_token="",
         whatsapp_phone_number_id="",
         whatsapp_to="",
+    )
+
+
+def _google_settings(directory: Path) -> Settings:
+    return replace(
+        _settings(directory / "state.json"),
+        google_client_id="client-id",
+        google_client_secret="client-secret",
+        google_redirect_uri="http://127.0.0.1:8765/oauth/google/callback",
+        google_token_path=directory / "tokens.json",
+        google_oauth_state_path=directory / "oauth_state.json",
     )
 
 

@@ -45,6 +45,9 @@ class Settings:
     whatsapp_access_token: str
     whatsapp_phone_number_id: str
     whatsapp_to: str
+    google_redirect_uri: str = ""
+    google_token_path: Path = ROOT_DIR / "data" / "google_oauth_tokens.json"
+    google_oauth_state_path: Path = ROOT_DIR / "data" / "google_oauth_state.json"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -71,6 +74,19 @@ class Settings:
             whatsapp_access_token=os.getenv("WHATSAPP_ACCESS_TOKEN", ""),
             whatsapp_phone_number_id=os.getenv("WHATSAPP_PHONE_NUMBER_ID", ""),
             whatsapp_to=os.getenv("WHATSAPP_TO", ""),
+            google_redirect_uri=os.getenv("GOOGLE_REDIRECT_URI", ""),
+            google_token_path=Path(
+                os.getenv(
+                    "GOOGLE_TOKEN_PATH",
+                    str(ROOT_DIR / "data" / "google_oauth_tokens.json"),
+                )
+            ),
+            google_oauth_state_path=Path(
+                os.getenv(
+                    "GOOGLE_OAUTH_STATE_PATH",
+                    str(ROOT_DIR / "data" / "google_oauth_state.json"),
+                )
+            ),
         )
 
 
@@ -79,4 +95,3 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
-
