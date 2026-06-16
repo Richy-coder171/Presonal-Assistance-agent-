@@ -6,9 +6,9 @@ from zoneinfo import ZoneInfo
 from .ai import OpenAIAnalyzer
 from .classifier import build_briefing_text, classify_email, detect_conflicts, draft_hebrew_reply, summarize_email
 from .config import Settings
-from .google_oauth import GoogleOAuthManager, GoogleTokenStore
+from .google_oauth import GoogleDatabaseTokenStore, GoogleOAuthManager, GoogleTokenStore
 from .http_client import HttpError
-from .microsoft_oauth import MicrosoftOAuthManager, MicrosoftTokenStore
+from .microsoft_oauth import MicrosoftDatabaseTokenStore, MicrosoftOAuthManager, MicrosoftTokenStore
 from .models import ApprovalItem, CalendarEvent, DailyBriefing, EmailItem, TaskItem, new_id, now_iso
 from .providers import (
     CalendarProvider,
@@ -26,12 +26,24 @@ from .storage import StateStore
 class AssistantService:
     def __init__(self, settings: Settings, store: StateStore | None = None) -> None:
         self.settings = settings
-        self.store = store or StateStore(settings.data_path)
-        self.google_token_store = GoogleTokenStore(settings.google_token_path)
+        self.store = store or StateStore(
+            settings.data_path,
+            database_url=settings.database_url or None,
+            user_email=settings.admin_email or None,
+        )
+        self.google_token_store = (
+            GoogleDatabaseTokenStore(settings)
+            if settings.database_url
+            else GoogleTokenStore(settings.google_token_path)
+        )
         self.google_oauth = GoogleOAuthManager(settings, self.google_token_store)
         google = GoogleWorkspaceProvider(settings, self.google_token_store)
         self.google_provider = google
-        self.microsoft_token_store = MicrosoftTokenStore(settings.ms_token_path)
+        self.microsoft_token_store = (
+            MicrosoftDatabaseTokenStore(settings)
+            if settings.database_url
+            else MicrosoftTokenStore(settings.ms_token_path)
+        )
         self.microsoft_oauth = MicrosoftOAuthManager(settings, self.microsoft_token_store)
         microsoft = Microsoft365Provider(settings, self.microsoft_token_store)
         self.microsoft_provider = microsoft
@@ -163,6 +175,7 @@ class AssistantService:
             "conflicts": conflicts,
             "latest_briefing": latest_briefing,
             "approvals": self.list_approvals(),
+            "audit_logs": self.audit_logs(limit=25),
             "analytics": self.analytics(),
             "metrics": {
                 "urgent_emails": len(urgent),
@@ -233,6 +246,13 @@ class AssistantService:
         state = self.store.load()
         state["approvals"] = [approval.to_dict(), *state["approvals"]]
         self.store.save(state)
+        self.log_audit(
+            "approval_created",
+            "created",
+            entity_type="approval",
+            entity_id=approval.id,
+            metadata={"action_type": approval.action_type, "risk": approval.risk},
+        )
         return approval
 
     def approve_item(self, approval_id: str) -> ApprovalItem:
@@ -248,17 +268,37 @@ class AssistantService:
             now = now.replace(tzinfo=timezone)
         now = now.astimezone(timezone)
         if not self.settings.scheduler_enabled:
+            self.log_audit("scheduled_briefing", "skipped", message="Scheduler disabled")
             return {"status": "disabled"}
         if now.hour < self.settings.briefing_hour:
+            self.log_audit(
+                "scheduled_briefing",
+                "waiting",
+                metadata={"briefing_hour": self.settings.briefing_hour},
+            )
             return {"status": "waiting", "briefing_hour": self.settings.briefing_hour}
 
         state = self.store.load()
         today = now.date().isoformat()
         scheduler = dict(state.get("scheduler", {}))
         if scheduler.get("last_briefing_date") == today:
+            self.log_audit(
+                "scheduled_briefing",
+                "already_generated",
+                metadata={"date": today},
+            )
             return {"status": "already_generated", "date": today}
 
-        briefing = self.generate_briefing()
+        try:
+            briefing = self.generate_briefing()
+        except Exception as exc:  # noqa: BLE001 - worker retry path records this.
+            self.log_audit(
+                "scheduled_briefing",
+                "failure",
+                error=str(exc),
+                metadata={"date": today},
+            )
+            raise
         scheduler["last_briefing_date"] = today
         state = self.store.load()
         state["scheduler"] = scheduler
@@ -271,6 +311,13 @@ class AssistantService:
                 "payload": {"briefing_id": briefing.id},
                 "risk": "external_message",
             }
+        )
+        self.log_audit(
+            "scheduled_briefing",
+            "success",
+            entity_type="briefing",
+            entity_id=briefing.id,
+            metadata={"date": today, "approval_id": approval.id},
         )
         return {"status": "generated", "briefing": briefing.to_dict(), "approval": approval.to_dict()}
 
@@ -285,19 +332,48 @@ class AssistantService:
             if not approve:
                 approval.status = "rejected"
                 approval.completed_at = now_iso()
+                self.log_audit(
+                    "approval_rejected",
+                    "rejected",
+                    entity_type="approval",
+                    entity_id=approval.id,
+                    metadata={"action_type": approval.action_type},
+                )
             else:
                 approval.status = "approved"
                 approval.approved_at = now_iso()
                 state["approvals"] = [item.to_dict() for item in approvals]
                 self.store.save(state)
+                self.log_audit(
+                    "approval_approved",
+                    "approved",
+                    entity_type="approval",
+                    entity_id=approval.id,
+                    metadata={"action_type": approval.action_type},
+                )
                 try:
                     approval.result = self._execute_approval(approval)
                     approval.status = "completed"
                     approval.completed_at = now_iso()
+                    self.log_audit(
+                        "approval_execution",
+                        "success",
+                        entity_type="approval",
+                        entity_id=approval.id,
+                        metadata={"action_type": approval.action_type},
+                    )
                 except Exception as exc:  # noqa: BLE001 - persisted for user review.
                     approval.status = "failed"
                     approval.error = str(exc)
                     approval.completed_at = now_iso()
+                    self.log_audit(
+                        "approval_execution",
+                        "failure",
+                        entity_type="approval",
+                        entity_id=approval.id,
+                        error=str(exc),
+                        metadata={"action_type": approval.action_type},
+                    )
             state["approvals"] = [item.to_dict() for item in approvals]
             self.store.save(state)
             return approval
@@ -310,30 +386,66 @@ class AssistantService:
             raise RuntimeError("Approval must exist in the approval queue before execution.")
         payload = approval.payload
         action = approval.action_type
-        if action == "send_briefing":
-            return self.send_latest_briefing(approved=True)
-        if action == "send_message":
-            return self.messenger.send(str(payload.get("text", "")))
-        if action == "send_email":
-            provider = self._provider_for_action(str(payload.get("provider", "google")))
-            return provider.send_email(
-                str(payload.get("to", "")),
-                str(payload.get("subject", "")),
-                str(payload.get("body", "")),
+        provider_name = str(payload.get("provider", "google"))
+        self.log_audit(
+            action,
+            "attempted",
+            provider=provider_name if action in {"send_email", "create_focus_time", "create_calendar_event", "reschedule_event"} else "",
+            entity_type="approval",
+            entity_id=approval.id,
+            metadata={"risk": approval.risk},
+        )
+        try:
+            if action == "send_briefing":
+                result = self._send_latest_briefing_unlocked()
+            elif action == "send_message":
+                result = self.messenger.send(str(payload.get("text", "")))
+            elif action == "send_email":
+                provider = self._provider_for_action(provider_name)
+                self._assert_write_scope_enabled(provider_name, "email")
+                result = provider.send_email(
+                    str(payload.get("to", "")),
+                    str(payload.get("subject", "")),
+                    str(payload.get("body", "")),
+                )
+            elif action in {"create_focus_time", "create_calendar_event"}:
+                provider = self._provider_for_action(provider_name)
+                self._assert_write_scope_enabled(provider_name, "calendar")
+                result = provider.create_event(payload)
+            elif action == "reschedule_event":
+                provider = self._provider_for_action(provider_name)
+                self._assert_write_scope_enabled(provider_name, "calendar")
+                result = provider.update_event(str(payload.get("event_id", "")), payload)
+            elif action == "delete_event":
+                raise ValueError("Calendar deletion is not supported in the production safety model.")
+            elif action in {"delete_email", "delete_message", "trash_email", "trash_message"}:
+                raise ValueError("Gmail and Outlook email deletion is not supported.")
+            elif action in {"coordinate_meeting", "send_reminder", "send_prep_material", "notify_participants"}:
+                text = str(payload.get("text") or approval.description or approval.title)
+                result = self.messenger.send(text)
+            else:
+                raise ValueError(f"Unsupported approval action: {action}")
+        except Exception as exc:
+            self.log_audit(
+                action,
+                "failure",
+                provider=provider_name if provider_name else "",
+                entity_type="approval",
+                entity_id=approval.id,
+                error=str(exc),
+                metadata={"risk": approval.risk},
             )
-        if action in {"create_focus_time", "create_calendar_event"}:
-            provider = self._provider_for_action(str(payload.get("provider", "google")))
-            return provider.create_event(payload)
-        if action == "reschedule_event":
-            provider = self._provider_for_action(str(payload.get("provider", "google")))
-            return provider.update_event(str(payload.get("event_id", "")), payload)
-        if action == "delete_event":
-            provider = self._provider_for_action(str(payload.get("provider", "google")))
-            return provider.delete_event(str(payload.get("event_id", "")))
-        if action in {"coordinate_meeting", "send_reminder", "send_prep_material", "notify_participants"}:
-            text = str(payload.get("text") or approval.description or approval.title)
-            return self.messenger.send(text)
-        raise ValueError(f"Unsupported approval action: {action}")
+            raise
+
+        self.log_audit(
+            action,
+            "success",
+            provider=provider_name if provider_name else "",
+            entity_type="approval",
+            entity_id=approval.id,
+            metadata={"risk": approval.risk},
+        )
+        return result
 
     def _approval_is_approved_in_store(self, approval_id: str) -> bool:
         state = self.store.load()
@@ -346,6 +458,25 @@ class AssistantService:
         if provider.lower() in {"outlook", "microsoft", "microsoft365"}:
             return self.microsoft_provider
         return self.google_provider
+
+    def _assert_write_scope_enabled(self, provider: str, capability: str) -> None:
+        provider_key = provider.lower()
+        if provider_key in {"outlook", "microsoft", "microsoft365"}:
+            if capability == "email":
+                allowed = self.settings.ms_enable_write_actions and self.microsoft_provider.can_send_email
+                label = "Microsoft Mail.Send"
+            else:
+                allowed = self.settings.ms_enable_write_actions and self.microsoft_provider.can_write_calendar
+                label = "Microsoft Calendars.ReadWrite"
+        else:
+            if capability == "email":
+                allowed = self.settings.google_enable_write_actions and self.google_provider.can_send_email
+                label = "Google Gmail send"
+            else:
+                allowed = self.settings.google_enable_write_actions and self.google_provider.can_write_calendar
+                label = "Google Calendar write"
+        if not allowed:
+            raise RuntimeError(f"{label} scope is not enabled for approved production writes.")
 
     def refresh_emails(self) -> dict:
         incoming: list[EmailItem] = []
@@ -522,14 +653,47 @@ class AssistantService:
         self.store.save(state)
         return briefing
 
-    def send_latest_briefing(self, approved: bool = False) -> dict:
-        if not approved:
+    def send_latest_briefing(self, approved: bool = False, approval_id: str = "") -> dict:
+        if not approved or not approval_id or not self._approval_is_approved_in_store(approval_id):
             return {"sent": [], "errors": [{"channel": "approval", "error": "Sending requires explicit approval"}]}
+        return self._send_latest_briefing_unlocked()
+
+    def _send_latest_briefing_unlocked(self) -> dict:
         state = self.store.load()
         briefing = state["briefings"][0] if state["briefings"] else self.generate_briefing().to_dict()
         if not self.messenger.configured:
             return {"sent": [], "errors": [{"channel": "messaging", "error": "No Slack or WhatsApp channel configured"}]}
         return self.messenger.send(briefing["text"])
+
+    def audit_logs(self, limit: int = 100) -> list[dict]:
+        if hasattr(self.store, "list_audit_logs"):
+            return self.store.list_audit_logs(limit=limit)
+        return []
+
+    def log_audit(
+        self,
+        action: str,
+        status: str,
+        *,
+        provider: str = "",
+        entity_type: str = "",
+        entity_id: str = "",
+        message: str = "",
+        error: str = "",
+        metadata: dict | None = None,
+    ) -> dict:
+        if hasattr(self.store, "append_audit_log"):
+            return self.store.append_audit_log(
+                action=action,
+                status=status,
+                provider=provider,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                message=message,
+                error=error,
+                metadata=metadata or {},
+            )
+        return {}
 
     def _analyze_email(self, email: EmailItem) -> EmailItem:
         ai_analysis = self.analyzer.analyze_email(email)

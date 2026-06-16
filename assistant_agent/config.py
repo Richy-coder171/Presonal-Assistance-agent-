@@ -55,10 +55,22 @@ class Settings:
     ms_enable_write_actions: bool = False
     scheduler_enabled: bool = True
     briefing_hour: int = 8
+    database_url: str = ""
+    token_encryption_key: str = ""
+    admin_email: str = ""
+    admin_password: str = ""
+    admin_password_hash: str = ""
+    session_secret: str = ""
+    auth_enabled: bool = False
+    single_user_mode: bool = True
+    cors_origins: tuple[str, ...] = ("http://127.0.0.1:8765",)
+    scheduler_retry_attempts: int = 3
+    scheduler_retry_delay_seconds: int = 5
 
     @classmethod
     def from_env(cls) -> "Settings":
         load_dotenv()
+        default_cors = f"http://{os.getenv('APP_HOST', '127.0.0.1')}:{os.getenv('APP_PORT', '8765')}"
         return cls(
             host=os.getenv("APP_HOST", "127.0.0.1"),
             port=int(os.getenv("APP_PORT", "8765")),
@@ -111,6 +123,17 @@ class Settings:
             ms_enable_write_actions=_env_bool("MS_ENABLE_WRITE_ACTIONS", False),
             scheduler_enabled=_env_bool("SCHEDULER_ENABLED", True),
             briefing_hour=int(os.getenv("BRIEFING_HOUR", "8")),
+            database_url=os.getenv("DATABASE_URL", _default_sqlite_url()),
+            token_encryption_key=os.getenv("TOKEN_ENCRYPTION_KEY", ""),
+            admin_email=os.getenv("ADMIN_EMAIL", ""),
+            admin_password=os.getenv("ADMIN_PASSWORD", ""),
+            admin_password_hash=os.getenv("ADMIN_PASSWORD_HASH", ""),
+            session_secret=os.getenv("SESSION_SECRET", ""),
+            auth_enabled=_env_bool("AUTH_ENABLED", False),
+            single_user_mode=_env_bool("SINGLE_USER_MODE", True),
+            cors_origins=_env_list("CORS_ORIGINS", (default_cors,)),
+            scheduler_retry_attempts=int(os.getenv("SCHEDULER_RETRY_ATTEMPTS", "3")),
+            scheduler_retry_delay_seconds=int(os.getenv("SCHEDULER_RETRY_DELAY_SECONDS", "5")),
         )
 
 
@@ -119,3 +142,16 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    items = tuple(item.strip() for item in value.split(",") if item.strip())
+    return items or default
+
+
+def _default_sqlite_url() -> str:
+    path = (ROOT_DIR / "data" / "assistant.db").resolve().as_posix()
+    return f"sqlite:///{path}"

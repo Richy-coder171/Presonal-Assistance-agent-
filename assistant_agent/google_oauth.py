@@ -9,7 +9,9 @@ from typing import Any
 from urllib.parse import urlencode
 
 from .config import Settings
+from .db import OAuthToken, ProviderConnection, create_engine_for_url, ensure_user, init_database, session_factory
 from .http_client import HttpError, request_json
+from .token_crypto import decrypt_token_payload, encrypt_token_payload
 
 
 GOOGLE_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -36,13 +38,15 @@ class SecureJsonStore:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return {}
-        return payload if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            return {}
+        return decrypt_token_payload(payload)
 
     def save(self, payload: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = self.path.with_suffix(self.path.suffix + ".tmp")
         temp_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
+            json.dumps(encrypt_token_payload(payload), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         _restrict_permissions(temp_path)
@@ -102,6 +106,84 @@ class GoogleTokenStore(SecureJsonStore):
             ).isoformat()
         merged["updated_at"] = datetime.now(timezone.utc).isoformat()
         self.save(merged)
+
+
+class GoogleDatabaseTokenStore(GoogleTokenStore):
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.provider = "google"
+        self.path = settings.google_token_path
+        self.engine = init_database(create_engine_for_url(settings.database_url))
+        self.Session = session_factory(self.engine)
+
+    def load(self) -> dict[str, Any]:
+        with self.Session() as session:
+            user = ensure_user(session, self.settings.admin_email)
+            session.commit()
+            row = (
+                session.query(OAuthToken)
+                .filter_by(user_id=user.id, provider=self.provider)
+                .one_or_none()
+            )
+            if not row:
+                return {}
+            return decrypt_token_payload(
+                dict(row.token_payload or {}),
+                self.settings.token_encryption_key,
+            )
+
+    def save(self, payload: dict[str, Any]) -> None:
+        encrypted = encrypt_token_payload(payload, self.settings.token_encryption_key)
+        scopes = _scope_list(payload.get("scope", ""))
+        now = datetime.now(timezone.utc).isoformat()
+        with self.Session() as session:
+            user = ensure_user(session, self.settings.admin_email)
+            row = (
+                session.query(OAuthToken)
+                .filter_by(user_id=user.id, provider=self.provider)
+                .one_or_none()
+            )
+            if row is None:
+                row = OAuthToken(
+                    id=f"oauth_{self.provider}_{user.id}",
+                    user_id=user.id,
+                    provider=self.provider,
+                )
+                session.add(row)
+            row.token_payload = encrypted
+            row.scopes_json = scopes
+            row.expires_at = str(payload.get("expires_at", ""))
+            row.updated_at = now
+
+            connection = (
+                session.query(ProviderConnection)
+                .filter_by(user_id=user.id, provider=self.provider)
+                .one_or_none()
+            )
+            if connection is None:
+                connection = ProviderConnection(
+                    id=f"provider_{self.provider}_{user.id}",
+                    user_id=user.id,
+                    provider=self.provider,
+                    connected_at=now,
+                )
+                session.add(connection)
+            connection.scopes_json = scopes
+            connection.read_enabled = True
+            connection.write_enabled = any(
+                scope in {GMAIL_SEND_SCOPE, CALENDAR_EVENTS_SCOPE}
+                for scope in scopes
+            )
+            connection.updated_at = now
+            connection.status = "connected"
+            session.commit()
+
+    def clear(self) -> None:
+        with self.Session() as session:
+            user = ensure_user(session, self.settings.admin_email)
+            session.query(OAuthToken).filter_by(user_id=user.id, provider=self.provider).delete()
+            session.query(ProviderConnection).filter_by(user_id=user.id, provider=self.provider).delete()
+            session.commit()
 
 
 class GoogleOAuthManager:
@@ -243,3 +325,9 @@ def _restrict_permissions(path: Path) -> None:
         # Windows ACLs are controlled by the user profile; the file remains
         # server-side and is excluded from version control.
         pass
+
+
+def _scope_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return [item for item in str(value).split() if item]

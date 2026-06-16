@@ -6,8 +6,10 @@ from typing import Any
 from urllib.parse import urlencode
 
 from .config import Settings
+from .db import OAuthToken, ProviderConnection, create_engine_for_url, ensure_user, init_database, session_factory
 from .google_oauth import SecureJsonStore
 from .http_client import HttpError, request_json
+from .token_crypto import decrypt_token_payload, encrypt_token_payload
 
 
 GRAPH_SCOPE_PREFIX = "https://graph.microsoft.com/"
@@ -67,6 +69,84 @@ class MicrosoftTokenStore(SecureJsonStore):
             ).isoformat()
         merged["updated_at"] = datetime.now(timezone.utc).isoformat()
         self.save(merged)
+
+
+class MicrosoftDatabaseTokenStore(MicrosoftTokenStore):
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.provider = "microsoft"
+        self.path = settings.ms_token_path
+        self.engine = init_database(create_engine_for_url(settings.database_url))
+        self.Session = session_factory(self.engine)
+
+    def load(self) -> dict[str, Any]:
+        with self.Session() as session:
+            user = ensure_user(session, self.settings.admin_email)
+            session.commit()
+            row = (
+                session.query(OAuthToken)
+                .filter_by(user_id=user.id, provider=self.provider)
+                .one_or_none()
+            )
+            if not row:
+                return {}
+            return decrypt_token_payload(
+                dict(row.token_payload or {}),
+                self.settings.token_encryption_key,
+            )
+
+    def save(self, payload: dict[str, Any]) -> None:
+        encrypted = encrypt_token_payload(payload, self.settings.token_encryption_key)
+        scopes = _scope_list(payload.get("scope", ""))
+        now = datetime.now(timezone.utc).isoformat()
+        with self.Session() as session:
+            user = ensure_user(session, self.settings.admin_email)
+            row = (
+                session.query(OAuthToken)
+                .filter_by(user_id=user.id, provider=self.provider)
+                .one_or_none()
+            )
+            if row is None:
+                row = OAuthToken(
+                    id=f"oauth_{self.provider}_{user.id}",
+                    user_id=user.id,
+                    provider=self.provider,
+                )
+                session.add(row)
+            row.token_payload = encrypted
+            row.scopes_json = scopes
+            row.expires_at = str(payload.get("expires_at", ""))
+            row.updated_at = now
+
+            connection = (
+                session.query(ProviderConnection)
+                .filter_by(user_id=user.id, provider=self.provider)
+                .one_or_none()
+            )
+            if connection is None:
+                connection = ProviderConnection(
+                    id=f"provider_{self.provider}_{user.id}",
+                    user_id=user.id,
+                    provider=self.provider,
+                    connected_at=now,
+                )
+                session.add(connection)
+            connection.scopes_json = scopes
+            connection.read_enabled = True
+            connection.write_enabled = any(
+                scope.replace(GRAPH_SCOPE_PREFIX, "") in {MS_MAIL_SEND, MS_CALENDAR_WRITE}
+                for scope in scopes
+            )
+            connection.updated_at = now
+            connection.status = "connected"
+            session.commit()
+
+    def clear(self) -> None:
+        with self.Session() as session:
+            user = ensure_user(session, self.settings.admin_email)
+            session.query(OAuthToken).filter_by(user_id=user.id, provider=self.provider).delete()
+            session.query(ProviderConnection).filter_by(user_id=user.id, provider=self.provider).delete()
+            session.commit()
 
 
 class MicrosoftOAuthManager:
@@ -184,3 +264,9 @@ def _parse_datetime(value: str) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _scope_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return [item for item in str(value).split() if item]
