@@ -72,10 +72,10 @@ class AssistantRequestHandler(BaseHTTPRequestHandler):
                 self._json(approval.to_dict(), status=201)
             elif path.startswith("/api/approvals/") and path.endswith("/approve"):
                 approval_id = unquote(path.split("/")[-2])
-                self._json(self.service.approve_item(approval_id))
+                self._json(self.service.approve_item(approval_id).to_dict())
             elif path.startswith("/api/approvals/") and path.endswith("/reject"):
                 approval_id = unquote(path.split("/")[-2])
-                self._json(self.service.reject_item(approval_id))
+                self._json(self.service.reject_item(approval_id).to_dict())
             else:
                 self._json({"error": "Not found"}, status=404)
         except ValueError as exc:

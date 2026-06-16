@@ -228,7 +228,11 @@ class AssistantService:
         return self._update_approval(approval_id, approve=False)
 
     def run_scheduler_once(self, now: datetime | None = None) -> dict:
-        now = now or datetime.now(ZoneInfo(self.settings.timezone))
+        timezone = ZoneInfo(self.settings.timezone)
+        now = now or datetime.now(timezone)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone)
+        now = now.astimezone(timezone)
         if not self.settings.scheduler_enabled:
             return {"status": "disabled"}
         if now.hour < self.settings.briefing_hour:

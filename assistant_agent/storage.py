@@ -27,7 +27,7 @@ class StateStore:
         except json.JSONDecodeError:
             return _fresh_state()
         for key, value in DEFAULT_STATE.items():
-            state.setdefault(key, list(value))
+            state.setdefault(key, _clone_default(value))
         return state
 
     def save(self, state: dict[str, Any]) -> None:
@@ -38,4 +38,12 @@ class StateStore:
 
 
 def _fresh_state() -> dict[str, Any]:
-    return {key: list(value) for key, value in DEFAULT_STATE.items()}
+    return {key: _clone_default(value) for key, value in DEFAULT_STATE.items()}
+
+
+def _clone_default(value: Any) -> Any:
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, dict):
+        return dict(value)
+    return value

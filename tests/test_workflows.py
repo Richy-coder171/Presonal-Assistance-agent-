@@ -16,6 +16,11 @@ from assistant_agent.google_oauth import (
     GoogleOAuthManager,
     GoogleTokenStore,
 )
+from assistant_agent.microsoft_oauth import (
+    MS_CALENDAR_READ,
+    MS_MAIL_READ,
+    MicrosoftOAuthManager,
+)
 from assistant_agent.models import CalendarEvent, EmailItem
 from assistant_agent.service import AssistantService
 from assistant_agent.storage import StateStore
@@ -88,6 +93,32 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(result["sent"], [])
             self.assertEqual(result["errors"][0]["channel"], "approval")
 
+    def test_scheduler_creates_briefing_approval_once_per_day(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = _settings(Path(directory) / "state.json")
+            service = AssistantService(settings, StateStore(settings.data_path))
+            now = datetime(2026, 6, 8, 8, 5, tzinfo=timezone.utc)
+            first = service.run_scheduler_once(now)
+            second = service.run_scheduler_once(now)
+            approvals = service.list_approvals()
+            self.assertEqual(first["status"], "generated")
+            self.assertEqual(second["status"], "already_generated")
+            self.assertEqual(approvals[0]["action_type"], "send_briefing")
+
+    def test_approval_for_email_send_fails_without_write_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = _settings(Path(directory) / "state.json")
+            service = AssistantService(settings, StateStore(settings.data_path))
+            approval = service.create_approval(
+                {
+                    "action_type": "send_email",
+                    "payload": {"provider": "google", "to": "a@example.com", "subject": "Hi", "body": "Body"},
+                }
+            )
+            completed = service.approve_item(approval.id)
+            self.assertEqual(completed.status, "failed")
+            self.assertIn("scope", completed.error)
+
     def test_connection_status_uses_stored_google_scopes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -145,6 +176,20 @@ class GoogleOAuthTests(unittest.TestCase):
             self.assertEqual(GoogleTokenStore(settings.google_token_path).refresh_token(), "refresh")
 
 
+class MicrosoftOAuthTests(unittest.TestCase):
+    def test_authorization_url_uses_read_scopes_and_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = _microsoft_settings(Path(directory))
+            manager = MicrosoftOAuthManager(settings)
+            url = manager.authorization_url("http://127.0.0.1:8765/oauth/microsoft/callback")
+            query = parse_qs(urlparse(url).query)
+            scopes = set(query["scope"][0].split())
+            self.assertEqual(query["response_type"][0], "code")
+            self.assertIn("offline_access", scopes)
+            self.assertIn(MS_MAIL_READ, scopes)
+            self.assertIn(MS_CALENDAR_READ, scopes)
+
+
 def _settings(path: Path) -> Settings:
     return Settings(
         host="127.0.0.1",
@@ -179,6 +224,17 @@ def _google_settings(directory: Path) -> Settings:
         google_redirect_uri="http://127.0.0.1:8765/oauth/google/callback",
         google_token_path=directory / "tokens.json",
         google_oauth_state_path=directory / "oauth_state.json",
+    )
+
+
+def _microsoft_settings(directory: Path) -> Settings:
+    return replace(
+        _settings(directory / "state.json"),
+        ms_client_id="client-id",
+        ms_client_secret="client-secret",
+        ms_redirect_uri="http://127.0.0.1:8765/oauth/microsoft/callback",
+        ms_token_path=directory / "tokens.json",
+        ms_oauth_state_path=directory / "oauth_state.json",
     )
 
 

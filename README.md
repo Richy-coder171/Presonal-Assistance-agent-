@@ -1,26 +1,29 @@
 # Personal Assistant Agent
 
-Personal Assistant Agent is a Hebrew-first executive assistant dashboard for daily email triage, calendar coordination, task tracking, and morning briefings.
+Personal Assistant Agent is a Hebrew-first executive assistant dashboard for daily email triage, calendar coordination, task tracking, analytics, scheduled briefings, and approval-gated communications.
 
-The app runs immediately in demo mode. When credentials are added, the same workflows can read from Gmail, Google Calendar, Microsoft Outlook mail, Microsoft Outlook Calendar, and send approved briefings through Slack or WhatsApp.
+The app runs immediately in demo mode. When credentials are added, it can read Gmail, Google Calendar, Outlook mail, and Outlook Calendar. Risky actions such as email sends, calendar changes, reminders, prep-material messages, and participant notifications are routed through an approval queue.
 
 ## Project Overview
 
-The assistant helps busy professionals review messages, identify urgent work, detect calendar conflicts, organize tasks, and generate a clear daily briefing. The dashboard supports English and Hebrew UI labels through a translation dictionary in `web/i18n.js`.
+The assistant helps busy professionals review messages, identify urgent work, detect calendar conflicts, organize tasks, and generate a clear daily briefing. The dashboard supports English and Hebrew UI labels through `web/i18n.js`.
 
-Demo mode is enabled by default so the full product workflow can be tested locally without connecting real accounts.
+Demo mode is enabled by default so the full workflow can be tested locally without connecting real accounts.
 
 ## Features
 
 - Inbox triage: pulls recent inbox messages and classifies them as urgent, important, routine, or FYI.
 - Hebrew reply drafts: prepares warm, professional Hebrew draft replies for messages that need a response.
 - Calendar overview: reads upcoming events and detects schedule conflicts.
-- Daily report: generates a morning briefing with urgent messages, important messages, meetings, conflicts, open tasks, and recommendations.
-- Task management: creates, updates, completes, and deletes local tasks in `data/state.json`.
-- Provider status: shows whether Google, Microsoft, OpenAI, and messaging providers are configured.
-- Google OAuth: connects Gmail and Google Calendar with read-only scopes and stores tokens server-side.
-- Messaging: can send the latest briefing through Slack or WhatsApp only after explicit approval.
-- Bilingual UI: clean English and Hebrew labels, including Inbox, Send, Report, Calendar, Messages, Daily Report, Morning Briefing, Conflicts, Tasks, Important, Urgent, System updated, Calendar conflicts, Open tasks, and Recommendation.
+- Daily report: generates a morning briefing with urgent messages, key meetings, conflicts, tasks, and recommendations.
+- Scheduler: checks after the configured 8 AM briefing hour and creates one daily briefing approval per day.
+- Analytics: tracks email response workload, calendar conflicts, focus blocks, task status, and success targets.
+- Approval queue: stores proposed sends and calendar changes until a human approves or rejects them.
+- Google OAuth: connects Gmail and Google Calendar with server-side token storage.
+- Microsoft OAuth: connects Outlook mail and Outlook Calendar through Microsoft Graph.
+- Optional write execution: email sends and calendar changes can execute only after write scopes are enabled and an approval item is approved.
+- Messaging: sends approved briefings, reminders, prep materials, and notifications through Slack or WhatsApp when configured.
+- Bilingual UI: English and Hebrew labels for the dashboard.
 
 ## Architecture
 
@@ -32,6 +35,9 @@ Browser dashboard
       -> Calendar workflow
       -> Task workflow
       -> Briefing workflow
+      -> Scheduler
+      -> Analytics
+      -> Approval queue
       -> Provider adapters
         -> Google Workspace
         -> Microsoft 365
@@ -39,10 +45,10 @@ Browser dashboard
         -> WhatsApp
         -> OpenAI enrichment
     -> JSON state store
-    -> Server-only OAuth token store
+    -> Server-only OAuth token stores
 ```
 
-The server is intentionally dependency-light and uses the Python standard library for local development. Provider adapters are isolated under `assistant_agent/providers/` so real integrations can be improved without rewriting the dashboard or workflow engine.
+The server uses the Python standard library. Provider adapters are isolated under `assistant_agent/providers/`.
 
 ## Folder Structure
 
@@ -54,6 +60,7 @@ The server is intentionally dependency-light and uses the Python standard librar
 |   |-- config.py
 |   |-- google_oauth.py
 |   |-- http_client.py
+|   |-- microsoft_oauth.py
 |   |-- models.py
 |   |-- sample_data.py
 |   |-- server.py
@@ -81,13 +88,11 @@ The server is intentionally dependency-light and uses the Python standard librar
 
 ## Run Commands
 
-Start the local server:
-
 ```powershell
 python -m assistant_agent.server --port 8765
 ```
 
-Open the dashboard:
+Open:
 
 ```text
 http://127.0.0.1:8765
@@ -97,11 +102,6 @@ Run tests:
 
 ```powershell
 python -m unittest discover -s tests -v
-```
-
-Check Python syntax:
-
-```powershell
 python -m compileall assistant_agent tests -q
 ```
 
@@ -113,54 +113,11 @@ Copy `.env.example` to `.env`:
 Copy-Item .env.example .env
 ```
 
-Fill in only the credentials you want to enable. The app does not require all integrations at once.
-
-## Google OAuth Setup
-
-The Google connection uses the OAuth 2.0 web-server flow and requests only:
-
-```text
-https://www.googleapis.com/auth/gmail.readonly
-https://www.googleapis.com/auth/calendar.readonly
-```
-
-It does not request Gmail send/modify scopes or Calendar event write scopes.
-
-1. Create or select a project in Google Cloud Console.
-2. Enable the **Gmail API** and **Google Calendar API**.
-3. Configure the OAuth consent screen.
-4. Create an OAuth client with application type **Web application**.
-5. Add this authorized redirect URI for local development:
-
-```text
-http://127.0.0.1:8765/oauth/google/callback
-```
-
-6. Add the client credentials to `.env`:
-
-```env
-GOOGLE_CLIENT_ID=your-client-id
-GOOGLE_CLIENT_SECRET=your-client-secret
-GOOGLE_REDIRECT_URI=http://127.0.0.1:8765/oauth/google/callback
-GOOGLE_TOKEN_PATH=data/google_oauth_tokens.json
-GOOGLE_OAUTH_STATE_PATH=data/google_oauth_state.json
-GOOGLE_CALENDAR_ID=primary
-```
-
-7. Start the app and select **Connect Google Account** on the connection status panel.
-8. Complete Google consent. The app returns to the dashboard and loads recent Gmail messages and upcoming Calendar events.
-
-OAuth access and refresh tokens are stored only in `data/google_oauth_tokens.json`. The `data/` directory is ignored by Git. The frontend never receives OAuth tokens.
-
-For a deployed installation, set `GOOGLE_REDIRECT_URI` to the exact HTTPS callback URL registered in Google Cloud.
-
-### Demo Mode
+## Demo Mode
 
 ```env
 DEMO_MODE=true
 ```
-
-When demo mode is true and no provider data is available, the assistant uses local sample emails, calendar events, and tasks.
 
 Use real-only mode after OAuth is configured:
 
@@ -170,77 +127,133 @@ DEMO_MODE=false
 
 When a real provider is connected, an empty inbox/calendar or provider error does not silently load demo records.
 
-### Google Workspace
-
-Google access can be supplied with:
+## Scheduler
 
 ```env
-GOOGLE_ACCESS_TOKEN=
+SCHEDULER_ENABLED=true
+BRIEFING_HOUR=8
 ```
 
-or with:
+The scheduler runs only while the Python server is running. It generates one briefing per local day after the configured hour and creates a pending approval to send it. It does not send messages by itself.
+
+## Google OAuth
+
+Register this local redirect URI in Google Cloud:
+
+```text
+http://127.0.0.1:8765/oauth/google/callback
+```
 
 ```env
-GOOGLE_CLIENT_ID=
-GOOGLE_CLIENT_SECRET=
-GOOGLE_REFRESH_TOKEN=
+GOOGLE_CLIENT_ID=your-client-id
+GOOGLE_CLIENT_SECRET=your-client-secret
+GOOGLE_REDIRECT_URI=http://127.0.0.1:8765/oauth/google/callback
+GOOGLE_TOKEN_PATH=data/google_oauth_tokens.json
+GOOGLE_OAUTH_STATE_PATH=data/google_oauth_state.json
 GOOGLE_CALENDAR_ID=primary
+GOOGLE_ENABLE_WRITE_ACTIONS=false
 ```
 
-The interactive OAuth flow is recommended. `GOOGLE_ACCESS_TOKEN` and `GOOGLE_REFRESH_TOKEN` remain supported for compatibility.
+Default Google scopes:
 
-### Microsoft 365
-
-Microsoft Graph access can be supplied with:
-
-```env
-MS_GRAPH_ACCESS_TOKEN=
+```text
+https://www.googleapis.com/auth/gmail.readonly
+https://www.googleapis.com/auth/calendar.readonly
 ```
 
-or with:
+Optional write scopes when `GOOGLE_ENABLE_WRITE_ACTIONS=true`:
+
+```text
+https://www.googleapis.com/auth/gmail.send
+https://www.googleapis.com/auth/calendar.events
+```
+
+Write scopes are still approval-gated.
+
+## Microsoft OAuth
+
+Register this local redirect URI in Microsoft Entra ID:
+
+```text
+http://127.0.0.1:8765/oauth/microsoft/callback
+```
 
 ```env
-MS_CLIENT_ID=
-MS_CLIENT_SECRET=
-MS_REFRESH_TOKEN=
+MS_CLIENT_ID=your-client-id
+MS_CLIENT_SECRET=your-client-secret
 MS_TENANT_ID=common
+MS_REDIRECT_URI=http://127.0.0.1:8765/oauth/microsoft/callback
+MS_TOKEN_PATH=data/microsoft_oauth_tokens.json
+MS_OAUTH_STATE_PATH=data/microsoft_oauth_state.json
+MS_ENABLE_WRITE_ACTIONS=false
 ```
 
-### OpenAI Enrichment
+Default Microsoft delegated scopes:
 
-OpenAI is optional. Without it, the app uses deterministic local Hebrew logic for classification, summaries, and reply drafts.
+```text
+offline_access
+Mail.Read
+Calendars.Read
+```
+
+Optional write scopes when `MS_ENABLE_WRITE_ACTIONS=true`:
+
+```text
+Mail.Send
+Calendars.ReadWrite
+```
+
+Write scopes are still approval-gated.
+
+## OpenAI Enrichment
 
 ```env
 OPENAI_API_KEY=
 OPENAI_MODEL=
 ```
 
-### Slack
+Without OpenAI, the app uses deterministic local Hebrew logic.
+
+## Messaging Channels
 
 ```env
 SLACK_WEBHOOK_URL=
-```
-
-### WhatsApp
-
-```env
 WHATSAPP_ACCESS_TOKEN=
 WHATSAPP_PHONE_NUMBER_ID=
 WHATSAPP_TO=
 ```
 
+## Approval Workflow
+
+1. The assistant creates an approval item for a risky action.
+2. The user reviews the title, description, payload, and risk.
+3. The user approves or rejects it.
+4. Only approved actions execute.
+5. The result or error is stored on the approval item.
+
+Supported approval actions:
+
+- `send_briefing`
+- `send_message`
+- `send_email`
+- `create_focus_time`
+- `create_calendar_event`
+- `reschedule_event`
+- `delete_event`
+- `coordinate_meeting`
+- `send_reminder`
+- `send_prep_material`
+- `notify_participants`
+
 ## Safety Rules
 
-- The app does not send email replies.
-- The app does not delete emails.
-- The app does not create, edit, or delete real calendar events.
-- Google OAuth requests Gmail and Calendar read-only scopes only.
-- OAuth state is short-lived and validated before a callback can exchange tokens.
-- Google OAuth tokens are stored server-side under `data/`, never in frontend code.
-- The app does not send Slack or WhatsApp briefings unless the UI confirmation is accepted and the API request includes explicit approval.
-- OAuth tokens and provider secrets must stay in `.env`; they are not displayed in the dashboard.
+- Email sends require an approval item and provider write scope.
+- Calendar creates, updates, and deletes require an approval item and provider write scope.
+- The app never deletes Gmail messages or Outlook messages.
+- OAuth tokens are stored server-side under `data/`, never in frontend code.
+- OAuth state is short-lived and validated before token exchange.
 - Demo mode uses sample data only.
-- Human review is required before any future production workflow sends messages or changes calendar state.
+- Human review is required before any workflow sends messages or changes calendar state.
 
 ## Screenshots
 
@@ -252,31 +265,24 @@ Suggested files:
 - `docs/screenshots/dashboard-he.png`
 - `docs/screenshots/mobile-dashboard.png`
 
-The docs folder includes a screenshot note so captures can be added without changing the app code.
-
 ## Known Limitations
 
-- Demo mode uses local sample data.
-- Gmail, Google Calendar, Outlook, and Microsoft Calendar require valid OAuth credentials.
-- Slack and WhatsApp sending require provider credentials and explicit approval.
-- The app currently reads email/calendar data but does not perform real inbox or calendar mutations.
-- OAuth setup is manual; there is no hosted consent flow yet.
-- Google OAuth requires the callback URL to match the Google Cloud OAuth client exactly.
-- Local token storage is suitable for a single-user local installation; production should use encrypted secret storage.
-- The local JSON state store is appropriate for development, not multi-user production.
-- OpenAI enrichment is optional and depends on the configured model and API key.
+- OAuth setup is local/manual.
+- Local token storage is suitable for single-user local use; production should use encrypted secret storage.
+- Attendance-rate analytics require an external attendance signal and currently show unavailable.
+- Background scheduling runs only while the local Python server is running.
+- OpenAI enrichment depends on the configured model and API key.
+- Public Google apps that request sensitive or restricted scopes may require Google verification.
 
 ## Production Roadmap
 
-1. Add a hosted Microsoft OAuth setup flow and production Google OAuth secret storage.
+1. Encrypted production secret storage.
 2. User authentication and account separation.
-3. Approval queue for reply drafts, briefing sends, and proposed calendar changes.
-4. Audit log for every provider action.
-5. Encrypted token storage.
-6. Background scheduler for the 8 AM briefing workflow.
-7. Real email response workflow with human approval.
-8. Calendar rescheduling suggestions with human approval.
+3. Audit log for every provider action.
+4. Hosted OAuth setup for Google and Microsoft.
+5. Background worker service for scheduled jobs.
+6. Rich approval payload diffing for calendar changes.
+7. Email response-time tracking from sent-message events.
+8. Calendar attendance analytics from provider data or meeting platform exports.
 9. Deployment packaging, monitoring, and backup strategy.
 10. Multi-user workspace support.
-#   P r e s o n a l - A s s i s t a n c e - a g e n t -  
- 

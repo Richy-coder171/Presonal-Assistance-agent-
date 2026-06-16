@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from email.message import EmailMessage
 from html import unescape
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from ..config import Settings
 from ..http_client import request_json
@@ -130,6 +129,7 @@ class Microsoft365Provider(EmailProvider, CalendarProvider):
     def update_event(self, event_id: str, payload: dict[str, Any]) -> dict:
         if not self.can_write_calendar:
             raise RuntimeError("Microsoft Calendars.ReadWrite scope is not connected.")
+        event_id = quote(event_id, safe="")
         return request_json(
             f"{GRAPH_BASE}/me/events/{event_id}",
             method="PATCH",
@@ -140,6 +140,7 @@ class Microsoft365Provider(EmailProvider, CalendarProvider):
     def delete_event(self, event_id: str) -> dict:
         if not self.can_write_calendar:
             raise RuntimeError("Microsoft Calendars.ReadWrite scope is not connected.")
+        event_id = quote(event_id, safe="")
         request_json(
             f"{GRAPH_BASE}/me/events/{event_id}",
             method="DELETE",
