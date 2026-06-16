@@ -197,6 +197,23 @@ h2 {
   font-weight: 650;
 }
 
+.connection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.connect-button.secondary {
+  color: var(--blue);
+  background: var(--surface);
+}
+
+.connect-button.secondary .button-icon {
+  color: #ffffff;
+  background: var(--blue);
+}
+
 .connect-button .button-icon {
   color: var(--blue);
   background: #ffffff;
