@@ -62,8 +62,8 @@ class AssistantRequestHandler(BaseHTTPRequestHandler):
                     self._json({"error": "Sending requires explicit approval"}, status=403)
                 else:
                     self._json(self.service.send_latest_briefing(approved=True))
-            elif path == "/api/demo/load":
-                self._json(self.service.load_demo())
+            elif path in {"/api/demo/load", "/api/demo/reset"}:
+                self._json(self.service.reset_demo())
             elif path == "/api/tasks":
                 task = self.service.create_task(self._body())
                 self._json(task.to_dict(), status=201)

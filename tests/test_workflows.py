@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,7 +22,8 @@ from assistant_agent.microsoft_oauth import (
     MS_MAIL_READ,
     MicrosoftOAuthManager,
 )
-from assistant_agent.models import CalendarEvent, EmailItem
+from assistant_agent.models import ApprovalItem, CalendarEvent, EmailItem, TaskItem
+from assistant_agent.sample_data import sample_emails, sample_events, sample_tasks
 from assistant_agent.service import AssistantService
 from assistant_agent.storage import StateStore
 
@@ -117,6 +119,34 @@ class CalendarTests(unittest.TestCase):
         self.assertEqual(conflicts[0]["titles"], ["A", "B"])
 
 
+class DemoDataTests(unittest.TestCase):
+    def test_demo_data_has_client_ready_coverage(self) -> None:
+        emails = sample_emails("Asia/Jerusalem")
+        events = sample_events("Asia/Jerusalem")
+        tasks = sample_tasks("Asia/Jerusalem")
+        priorities = [classify_email(email)[0] for email in emails]
+        hebrew_emails = [
+            email for email in emails
+            if any("\u0590" <= char <= "\u05ff" for char in f"{email.subject} {email.body}")
+        ]
+        english_emails = [
+            email for email in emails
+            if any("a" <= char.casefold() <= "z" for char in f"{email.subject} {email.body}")
+        ]
+
+        self.assertGreaterEqual(priorities.count("urgent"), 2)
+        self.assertGreaterEqual(priorities.count("important"), 2)
+        self.assertGreaterEqual(priorities.count("routine"), 2)
+        self.assertGreaterEqual(priorities.count("fyi"), 2)
+        self.assertGreaterEqual(len(hebrew_emails), 2)
+        self.assertGreaterEqual(len(english_emails), 1)
+        self.assertGreaterEqual(len(detect_conflicts(events)), 1)
+        self.assertTrue(any("מיקוד" in event.title or "focus" in event.title.casefold() for event in events))
+        self.assertGreaterEqual(len(tasks), 5)
+        self.assertTrue(all(task.due_at for task in tasks))
+        self.assertTrue({"urgent", "important", "routine"}.issubset({task.priority for task in tasks}))
+
+
 class ServiceTests(unittest.TestCase):
     def test_demo_briefing_populates_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -183,6 +213,42 @@ class ServiceTests(unittest.TestCase):
                 self.assertEqual(approval.status, "pending")
                 send_email.assert_not_called()
 
+    def test_direct_approval_execution_requires_recorded_approved_item(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = _settings(Path(directory) / "state.json")
+            service = AssistantService(settings, StateStore(settings.data_path))
+            pending = service.create_approval(
+                {"action_type": "send_message", "payload": {"text": "Draft only"}}
+            )
+            with self.assertRaisesRegex(RuntimeError, "approved"):
+                service._execute_approval(ApprovalItem.from_dict(pending.to_dict()))
+
+            forged = ApprovalItem(
+                id="approval_not_recorded",
+                action_type="send_message",
+                title="Forged",
+                description="Not in queue",
+                payload={"text": "Should not send"},
+                status="approved",
+            )
+            with self.assertRaisesRegex(RuntimeError, "approval queue"):
+                service._execute_approval(forged)
+
+    def test_approved_email_action_executes_only_after_queue_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = _settings(Path(directory) / "state.json")
+            service = AssistantService(settings, StateStore(settings.data_path))
+            approval = service.create_approval(
+                {
+                    "action_type": "send_email",
+                    "payload": {"provider": "google", "to": "client@example.com", "subject": "Hi", "body": "Body"},
+                }
+            )
+            with patch.object(service.google_provider, "send_email", return_value={"sent": True}) as send_email:
+                completed = service.approve_item(approval.id)
+            self.assertEqual(completed.status, "completed")
+            send_email.assert_called_once_with("client@example.com", "Hi", "Body")
+
     def test_scheduler_creates_briefing_approval_once_per_day(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = _settings(Path(directory) / "state.json")
@@ -203,6 +269,25 @@ class ServiceTests(unittest.TestCase):
                 {
                     "action_type": "send_email",
                     "payload": {"provider": "google", "to": "a@example.com", "subject": "Hi", "body": "Body"},
+                }
+            )
+            completed = service.approve_item(approval.id)
+            self.assertEqual(completed.status, "failed")
+            self.assertIn("scope", completed.error)
+
+    def test_calendar_write_approval_fails_without_write_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = _settings(Path(directory) / "state.json")
+            service = AssistantService(settings, StateStore(settings.data_path))
+            approval = service.create_approval(
+                {
+                    "action_type": "create_focus_time",
+                    "payload": {
+                        "provider": "google",
+                        "title": "Focus time",
+                        "start": "2026-06-16T10:00:00+03:00",
+                        "end": "2026-06-16T11:00:00+03:00",
+                    },
                 }
             )
             completed = service.approve_item(approval.id)
@@ -246,6 +331,60 @@ class ServiceTests(unittest.TestCase):
             self.assertFalse(service.connection_status()["gmail"]["connected"])
             self.assertFalse(service.connection_status()["outlook_mail"]["connected"])
 
+    def test_demo_reset_preserves_real_provider_data_and_seeds_approvals(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = _settings(Path(directory) / "state.json")
+            store = StateStore(settings.data_path)
+            service = AssistantService(settings, store)
+            state = store.load()
+            state["emails"] = [
+                EmailItem(
+                    id="gmail_real",
+                    subject="Real provider email",
+                    sender="real@example.com",
+                    received_at=datetime.now(timezone.utc).isoformat(),
+                    snippet="Keep me",
+                    source="gmail",
+                ).to_dict()
+            ]
+            state["events"] = [
+                CalendarEvent(
+                    id="gcal_real",
+                    title="Real provider event",
+                    start=datetime.now(timezone.utc).isoformat(),
+                    end=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+                    source="google_calendar",
+                ).to_dict()
+            ]
+            state["tasks"] = [
+                TaskItem(id="manual_real", title="Real manual task", source="manual").to_dict()
+            ]
+            state["approvals"] = [
+                ApprovalItem(
+                    id="real_approval",
+                    action_type="send_message",
+                    title="Real approval",
+                    description="Preserve me",
+                    payload={"text": "real"},
+                ).to_dict()
+            ]
+            store.save(state)
+
+            dashboard = service.reset_demo()
+            saved = store.load()
+
+            self.assertTrue(any(item["id"] == "gmail_real" for item in saved["emails"]))
+            self.assertTrue(any(item["id"] == "gcal_real" for item in saved["events"]))
+            self.assertTrue(any(item["id"] == "manual_real" for item in saved["tasks"]))
+            self.assertFalse(any(item["id"] == "real_approval" for item in saved["approvals"]))
+            self.assertGreaterEqual(len([item for item in saved["emails"] if item["source"] == "demo"]), 8)
+            self.assertGreaterEqual(len([item for item in saved["events"] if item["source"] == "demo"]), 5)
+            self.assertGreaterEqual(len([item for item in saved["tasks"] if item["source"] == "demo"]), 5)
+            self.assertTrue(all(item["id"].startswith("demo_approval") for item in saved["approvals"]))
+            self.assertGreaterEqual(len(saved["approvals"]), 4)
+            self.assertGreaterEqual(dashboard["analytics"]["email"]["total"], 8)
+            self.assertTrue(dashboard["latest_briefing"]["text"])
+
     def test_status_includes_runtime_and_scheduler_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = _settings(Path(directory) / "state.json")
@@ -258,6 +397,24 @@ class ServiceTests(unittest.TestCase):
             self.assertIn("current_time", status)
             self.assertIn(status["scheduler"]["status"], {"waiting_for_briefing_hour", "ready_to_generate"})
             self.assertIn("connections", status)
+
+
+class StorageTests(unittest.TestCase):
+    def test_state_store_handles_concurrent_saves(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = StateStore(Path(directory) / "state.json")
+
+            def save_state(index: int) -> None:
+                state = store.load()
+                state["tasks"] = [{"id": f"task_{index}", "title": f"Task {index}"}]
+                store.save(state)
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                list(executor.map(save_state, range(12)))
+
+            state = store.load()
+            self.assertIn("tasks", state)
+            self.assertEqual(len(list(Path(directory).glob("*.tmp"))), 0)
 
 
 class GoogleOAuthTests(unittest.TestCase):
@@ -307,6 +464,37 @@ class MicrosoftOAuthTests(unittest.TestCase):
             self.assertIn("offline_access", scopes)
             self.assertIn(MS_MAIL_READ, scopes)
             self.assertIn(MS_CALENDAR_READ, scopes)
+
+
+class ProjectSafetyTests(unittest.TestCase):
+    def test_provider_code_does_not_delete_email_messages(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        google_code = (root / "assistant_agent" / "providers" / "google.py").read_text(encoding="utf-8").casefold()
+        microsoft_code = (root / "assistant_agent" / "providers" / "microsoft.py").read_text(encoding="utf-8").casefold()
+
+        self.assertNotIn("delete_email", google_code + microsoft_code)
+        self.assertNotIn("delete_message", google_code + microsoft_code)
+        self.assertNotIn("messages/delete", google_code)
+        self.assertNotIn("/trash", google_code)
+        self.assertNotIn("/me/messages/", microsoft_code)
+        self.assertNotIn("mailfolders/inbox/messages/", microsoft_code)
+
+    def test_frontend_contains_no_oauth_tokens_or_secrets(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        forbidden = {
+            "access_token",
+            "refresh_token",
+            "client_secret",
+            "google_client_secret",
+            "ms_client_secret",
+            "authorization: bearer",
+        }
+        for path in (root / "web").glob("*"):
+            if path.is_file():
+                text = path.read_text(encoding="utf-8").casefold()
+                for term in forbidden:
+                    with self.subTest(path=path.name, term=term):
+                        self.assertNotIn(term, text)
 
 
 def _settings(path: Path) -> Settings:

@@ -232,6 +232,75 @@ h2 {
   padding: 16px;
 }
 
+.status-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px 16px 0;
+}
+
+.status-card,
+.priority-card {
+  min-height: 74px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.status-card span,
+.priority-card span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.status-card strong,
+.priority-card strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 1.06rem;
+  line-height: 1.25;
+}
+
+.status-card.ok,
+.priority-card.ok {
+  border-color: rgba(20, 122, 89, 0.35);
+  background: rgba(20, 122, 89, 0.06);
+}
+
+.status-card.info,
+.priority-card.info {
+  border-color: rgba(36, 87, 197, 0.3);
+  background: rgba(36, 87, 197, 0.06);
+}
+
+.priority-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-soft);
+}
+
+.priority-card strong {
+  font-size: 1.7rem;
+}
+
+.priority-card.danger strong {
+  color: var(--red);
+}
+
+.priority-card.warn strong {
+  color: var(--amber);
+}
+
+.priority-card.info strong {
+  color: var(--blue);
+}
+
 .connection-item {
   display: flex;
   align-items: center;
@@ -430,6 +499,12 @@ h2 {
   color: var(--text);
   font-family: "Segoe UI", Arial, sans-serif;
   line-height: 1.68;
+  unicode-bidi: plaintext;
+}
+
+.briefing-text[dir="rtl"],
+html[dir="rtl"] .briefing-text {
+  text-align: right;
 }
 
 .list {
@@ -544,6 +619,43 @@ details pre {
   background: var(--surface-soft);
   white-space: pre-wrap;
   font-family: "Segoe UI", Arial, sans-serif;
+  unicode-bidi: plaintext;
+}
+
+.conflict-summary {
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-soft);
+}
+
+.summary-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.summary-note strong {
+  font-size: 1.35rem;
+}
+
+.summary-note.ok {
+  color: var(--green);
+  border-color: rgba(20, 122, 89, 0.35);
+  background: rgba(20, 122, 89, 0.06);
+}
+
+.summary-note.danger {
+  color: var(--red);
+  border-color: rgba(183, 53, 53, 0.35);
+  background: rgba(183, 53, 53, 0.08);
 }
 
 .task-form {
@@ -699,6 +811,11 @@ details pre {
     grid-template-columns: 1fr;
   }
 
+  .status-strip,
+  .priority-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .metric:nth-child(odd) {
     border-inline-start: 0;
   }
@@ -737,6 +854,8 @@ details pre {
   }
 
   .metrics,
+  .status-strip,
+  .priority-summary,
   .task-form,
   .approval-form {
     grid-template-columns: 1fr;

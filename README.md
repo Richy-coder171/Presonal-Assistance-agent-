@@ -25,6 +25,8 @@ Use this flow for a 1-2 minute client walkthrough:
 9. Show the approval queue for risky actions such as sending a briefing, sending an email, creating focus time, rescheduling a meeting, or notifying participants.
 10. Show analytics for response workload, calendar conflicts, focus blocks, and open tasks.
 
+Use **Reset Demo** before recording or presenting. It reseeds demo-only emails, calendar events, tasks, approvals, analytics, and a fresh Hebrew briefing without removing real provider records.
+
 Recommended demo command:
 
 ```powershell
@@ -110,6 +112,7 @@ Provider adapters live under `assistant_agent/providers/`, so real integrations 
 |       `-- microsoft.py
 |-- docs/
 |   |-- CLIENT_READINESS_CHECKLIST.md
+|   |-- DEPLOYMENT.md
 |   |-- README.md
 |   `-- screenshots/
 |       `-- README.md
@@ -122,6 +125,7 @@ Provider adapters live under `assistant_agent/providers/`, so real integrations 
 |   `-- styles.css
 |-- CLIENT_PROPOSAL.md
 |-- DEMO_SCRIPT.md
+|-- SUBMISSION_MESSAGE.md
 |-- .env.example
 `-- README.md
 ```
@@ -316,6 +320,8 @@ Client-facing support files:
 - `DEMO_SCRIPT.md`
 - `CLIENT_PROPOSAL.md`
 - `docs/CLIENT_READINESS_CHECKLIST.md`
+- `docs/DEPLOYMENT.md`
+- `SUBMISSION_MESSAGE.md`
 
 ## Known Limitations
 

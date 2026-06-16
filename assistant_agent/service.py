@@ -19,7 +19,7 @@ from .providers import (
     SlackMessenger,
     WhatsAppMessenger,
 )
-from .sample_data import sample_emails, sample_events, sample_tasks
+from .sample_data import sample_approvals, sample_emails, sample_events, sample_tasks
 from .storage import StateStore
 
 
@@ -288,6 +288,8 @@ class AssistantService:
             else:
                 approval.status = "approved"
                 approval.approved_at = now_iso()
+                state["approvals"] = [item.to_dict() for item in approvals]
+                self.store.save(state)
                 try:
                     approval.result = self._execute_approval(approval)
                     approval.status = "completed"
@@ -302,6 +304,10 @@ class AssistantService:
         raise KeyError(f"Approval not found: {approval_id}")
 
     def _execute_approval(self, approval: ApprovalItem) -> dict:
+        if approval.status != "approved":
+            raise RuntimeError("Approval must be approved before execution.")
+        if not self._approval_is_approved_in_store(approval.id):
+            raise RuntimeError("Approval must exist in the approval queue before execution.")
         payload = approval.payload
         action = approval.action_type
         if action == "send_briefing":
@@ -328,6 +334,13 @@ class AssistantService:
             text = str(payload.get("text") or approval.description or approval.title)
             return self.messenger.send(text)
         raise ValueError(f"Unsupported approval action: {action}")
+
+    def _approval_is_approved_in_store(self, approval_id: str) -> bool:
+        state = self.store.load()
+        for item in state["approvals"]:
+            if item.get("id") == approval_id and item.get("status") == "approved":
+                return True
+        return False
 
     def _provider_for_action(self, provider: str):
         if provider.lower() in {"outlook", "microsoft", "microsoft365"}:
@@ -397,13 +410,36 @@ class AssistantService:
         return {"events": [item.to_dict() for item in incoming], "conflicts": detect_conflicts(incoming), "errors": errors, "used_demo": used_demo}
 
     def load_demo(self) -> dict:
+        return self.reset_demo()
+
+    def reset_demo(self) -> dict:
         emails = [self._analyze_email(item) for item in sample_emails(self.settings.timezone)]
         events = sample_events(self.settings.timezone)
         tasks = sample_tasks(self.settings.timezone)
         state = self.store.load()
-        state["emails"] = _merge_by_id([EmailItem.from_dict(item) for item in state["emails"]], emails, limit=80)
-        state["events"] = _merge_by_id([CalendarEvent.from_dict(item) for item in state["events"]], events, limit=120)
-        state["tasks"] = _merge_by_id([TaskItem.from_dict(item) for item in state["tasks"]], tasks, limit=120)
+        state["emails"] = _merge_by_id(
+            [EmailItem.from_dict(item) for item in state["emails"] if item.get("source") != "demo"],
+            emails,
+            limit=80,
+        )
+        state["events"] = _merge_by_id(
+            [CalendarEvent.from_dict(item) for item in state["events"] if item.get("source") != "demo"],
+            events,
+            limit=120,
+        )
+        state["tasks"] = _merge_by_id(
+            [TaskItem.from_dict(item) for item in state["tasks"] if item.get("source") != "demo"],
+            tasks,
+            limit=120,
+        )
+        state["approvals"] = []
+        state["scheduler"] = {}
+        self.store.save(state)
+        briefing = self.generate_briefing()
+        state = self.store.load()
+        state["approvals"] = [
+            item.to_dict() for item in sample_approvals(self.settings.timezone, briefing.id)
+        ]
         self.store.save(state)
         return self.dashboard()
 

@@ -53,6 +53,7 @@ Use this checklist before sending the MVP to a client or recording the demo vide
 
 ## Deployment Notes Completed
 
+- [ ] Review `docs/DEPLOYMENT.md`.
 - [ ] Decide local demo, private server, or hosted deployment.
 - [ ] Set production `GOOGLE_REDIRECT_URI` and `MS_REDIRECT_URI`.
 - [ ] Replace local token storage with encrypted secret storage for production.

@@ -26,7 +26,7 @@ function bindActions() {
   document.querySelector("[data-action='refresh-calendar']").addEventListener("click", () => runAction("/api/run/calendar"));
   document.querySelector("[data-action='briefing']").addEventListener("click", () => runAction("/api/run/briefing"));
   document.querySelector("[data-action='send-briefing']").addEventListener("click", sendLatestBriefing);
-  document.querySelector("[data-action='demo']").addEventListener("click", () => runAction("/api/demo/load"));
+  document.querySelector("[data-action='demo-reset']").addEventListener("click", resetDemo);
   document.querySelector("[data-action='connect-google']").addEventListener("click", connectGoogle);
   document.querySelector("[data-action='connect-microsoft']").addEventListener("click", connectMicrosoft);
   document.querySelector("[data-action='scheduler']").addEventListener("click", () => runAction("/api/run/scheduler"));
@@ -83,6 +83,19 @@ async function runAction(path) {
     } else {
       setNotice(t("completed"));
     }
+    await loadDashboard();
+  } catch (error) {
+    setNotice(error.message, true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function resetDemo() {
+  setBusy(true);
+  try {
+    await api("/api/demo/reset", { method: "POST" });
+    setNotice(t("demoResetComplete"));
     await loadDashboard();
   } catch (error) {
     setNotice(error.message, true);
@@ -202,15 +215,34 @@ async function deleteTask(id) {
 
 function render() {
   const data = state.dashboard;
+  renderStatusStrip(data.status);
   renderConnections(data.status.connections);
   renderAnalytics(data.analytics);
   renderApprovals(data.approvals);
   renderMetrics(data.metrics);
   renderIntegrations(data.status.configured, data.status.demo_mode);
+  renderPrioritySummary(data.emails);
   renderEmails(data.emails);
+  renderConflictSummary(data.conflicts);
   renderEvents(data.events, data.conflicts);
   renderTasks(data.tasks);
   renderBriefing(data.latest_briefing);
+}
+
+function renderStatusStrip(status) {
+  const target = document.querySelector("#status-strip");
+  const items = [
+    [t("demoMode"), status.demo_mode ? t("active") : t("inactive"), status.demo_mode ? "ok" : "neutral"],
+    [t("scheduler"), t(status.scheduler.status), status.scheduler.enabled ? "info" : "neutral"],
+    [t("localTime"), `${status.current_date} ${status.current_time}`, "neutral"],
+    [t("safety"), t("approvalGated"), "ok"],
+  ];
+  target.innerHTML = items.map(([label, value, tone]) => `
+    <div class="status-card ${tone}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `).join("");
 }
 
 function renderConnections(connections) {
@@ -263,7 +295,7 @@ function renderConnections(connections) {
   if (!connections.microsoft_oauth_configured) {
     target.insertAdjacentHTML(
       "beforeend",
-      `<div class="connection-warning">Microsoft OAuth client is not configured</div>`
+      `<div class="connection-warning">${escapeHtml(t("microsoftOauthConfigMissing"))}</div>`
     );
   }
 }
@@ -274,7 +306,7 @@ function renderAnalytics(analytics) {
     [t("messages"), analytics.email.requires_response, `${t("pending")} / ${analytics.email.target_response_minutes}m`],
     [t("calendarConflicts"), analytics.calendar.conflicts, "0 target"],
     [t("openTasks"), analytics.tasks.open, t("tasks")],
-    ["Focus", analytics.calendar.focus_blocks, t("calendar")],
+    [t("focusTime"), analytics.calendar.focus_blocks, t("calendar")],
   ];
   target.innerHTML = items.map(([label, value, detail]) => `
     <div class="metric">
@@ -288,7 +320,7 @@ function renderAnalytics(analytics) {
 function renderApprovals(approvals) {
   const target = document.querySelector("#approval-list");
   if (!approvals.length) {
-    target.innerHTML = empty(t("emptyTasks"));
+    target.innerHTML = empty(t("emptyApprovals"));
     return;
   }
   target.innerHTML = approvals.slice(0, 12).map((approval) => `
@@ -315,6 +347,27 @@ function renderApprovals(approvals) {
   target.querySelectorAll("[data-reject]").forEach((button) => {
     button.addEventListener("click", () => approvalAction(button.dataset.reject, "reject"));
   });
+}
+
+function renderPrioritySummary(emails) {
+  const target = document.querySelector("#priority-summary");
+  const counts = emails.reduce((memo, email) => {
+    const key = email.priority || "routine";
+    memo[key] = (memo[key] || 0) + 1;
+    return memo;
+  }, { urgent: 0, important: 0, routine: 0, fyi: 0 });
+  const items = [
+    ["urgent", counts.urgent, "danger"],
+    ["important", counts.important, "warn"],
+    ["routine", counts.routine, "neutral"],
+    ["fyi", counts.fyi, "info"],
+  ];
+  target.innerHTML = items.map(([key, value, tone]) => `
+    <div class="priority-card ${tone}">
+      <span>${escapeHtml(t(key))}</span>
+      <strong>${value}</strong>
+    </div>
+  `).join("");
 }
 
 async function approvalAction(id, action) {
@@ -371,18 +424,32 @@ function renderEmails(emails) {
     return;
   }
   target.innerHTML = emails.slice(0, 12).map((email) => `
-    <article class="item email-item">
+    <article class="item email-item" dir="auto">
       <div class="item-main">
         <div class="item-row">
           <strong>${escapeHtml(email.subject || t("noSubject"))}</strong>
           ${badge(email.priority)}
         </div>
-        <p>${escapeHtml(email.summary || email.snippet || "")}</p>
-        ${email.draft_reply ? `<details><summary>${escapeHtml(t("draftReply"))}</summary><pre>${escapeHtml(email.draft_reply)}</pre></details>` : ""}
+        <p dir="auto">${escapeHtml(email.summary || email.snippet || "")}</p>
+        ${email.draft_reply ? `<details><summary>${escapeHtml(t("draftReply"))}</summary><pre dir="auto">${escapeHtml(email.draft_reply)}</pre></details>` : ""}
       </div>
       <time>${formatDate(email.received_at)}</time>
     </article>
   `).join("");
+}
+
+function renderConflictSummary(conflicts) {
+  const target = document.querySelector("#conflict-summary");
+  if (!conflicts.length) {
+    target.innerHTML = `<div class="summary-note ok">${escapeHtml(t("noCalendarConflicts"))}</div>`;
+    return;
+  }
+  target.innerHTML = `
+    <div class="summary-note danger">
+      <strong>${conflicts.length}</strong>
+      <span>${escapeHtml(t("calendarConflicts"))}</span>
+    </div>
+  `;
 }
 
 function renderEvents(events, conflicts) {
@@ -399,7 +466,7 @@ function renderEvents(events, conflicts) {
           <strong>${escapeHtml(event.title)}</strong>
           ${conflictIds.has(event.id) ? `<span class="badge danger">${escapeHtml(t("conflicts"))}</span>` : ""}
         </div>
-        <p>${formatDate(event.start)} - ${formatTime(event.end)}${event.location ? ` · ${escapeHtml(event.location)}` : ""}</p>
+        <p dir="auto">${formatDate(event.start)} - ${formatTime(event.end)}${event.location ? ` - ${escapeHtml(event.location)}` : ""}</p>
       </div>
     </article>
   `).join("");
@@ -423,7 +490,7 @@ function renderTasks(tasks) {
             <strong>${escapeHtml(task.title)}</strong>
             ${badge(task.priority)}
           </div>
-          <p>${escapeHtml(task.notes || "")}${task.due_at ? ` · ${formatDate(task.due_at)}` : ""}</p>
+          <p dir="auto">${escapeHtml(task.notes || "")}${task.due_at ? ` - ${formatDate(task.due_at)}` : ""}</p>
         </div>
         <button class="icon-button danger-button" title="${t("delete")}" aria-label="${t("delete")}" data-delete-task="${task.id}"><span aria-hidden="true">&#215;</span></button>
       </article>
@@ -441,6 +508,7 @@ function renderTasks(tasks) {
 function renderBriefing(briefing) {
   const target = document.querySelector("#briefing-text");
   target.textContent = briefing ? briefing.text : t("loading");
+  target.dir = briefing && containsHebrew(briefing.text) ? "rtl" : "auto";
 }
 
 function badge(priority) {
@@ -512,7 +580,7 @@ function readOAuthNotice() {
   }
   if (params.get("oauth") === "microsoft_success") {
     window.history.replaceState({}, "", window.location.pathname);
-    return { text: "Microsoft account connected", isError: false };
+    return { text: window.AssistantI18n.appText("microsoftOauthSuccess", language), isError: false };
   }
   if (params.get("oauth_error")) {
     const message = params.get("oauth_error");
@@ -520,6 +588,10 @@ function readOAuthNotice() {
     return { text: `${window.AssistantI18n.appText("oauthFailed", language)}: ${message}`, isError: true };
   }
   return null;
+}
+
+function containsHebrew(value) {
+  return /[\u0590-\u05FF]/.test(String(value));
 }
 
 function escapeHtml(value) {

@@ -36,9 +36,9 @@
             <span class="button-icon" aria-hidden="true">&#8594;</span>
             <span data-i18n="send">Send</span>
           </button>
-          <button type="button" data-action="demo" data-i18n-title="loadDemoData">
+          <button type="button" data-action="demo-reset" data-i18n-title="resetDemoData">
             <span class="button-icon" aria-hidden="true">&#9670;</span>
-            <span data-i18n="demo">Demo</span>
+            <span data-i18n="resetDemo">Reset Demo</span>
           </button>
         </nav>
       </div>
@@ -62,6 +62,7 @@
             </button>
           </div>
         </div>
+        <div id="status-strip" class="status-strip" aria-live="polite"></div>
         <div id="connection-list" class="connection-grid" aria-live="polite"></div>
       </section>
 
@@ -129,7 +130,7 @@
             <h2 data-i18n="dailyReport">Daily Report</h2>
           </div>
         </div>
-        <pre id="briefing-text" class="briefing-text">Loading</pre>
+        <pre id="briefing-text" class="briefing-text" dir="auto">Loading</pre>
       </section>
 
       <section class="panel">
@@ -139,6 +140,7 @@
             <h2 data-i18n="inbox">Inbox</h2>
           </div>
         </div>
+        <div id="priority-summary" class="priority-summary" aria-live="polite"></div>
         <div id="email-list" class="list" aria-live="polite"></div>
       </section>
 
@@ -149,6 +151,7 @@
             <h2 data-i18n="calendar">Calendar</h2>
           </div>
         </div>
+        <div id="conflict-summary" class="conflict-summary" aria-live="polite"></div>
         <div id="calendar-list" class="list" aria-live="polite"></div>
       </section>
 
