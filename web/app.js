@@ -28,7 +28,10 @@ function bindActions() {
   document.querySelector("[data-action='send-briefing']").addEventListener("click", sendLatestBriefing);
   document.querySelector("[data-action='demo']").addEventListener("click", () => runAction("/api/demo/load"));
   document.querySelector("[data-action='connect-google']").addEventListener("click", connectGoogle);
+  document.querySelector("[data-action='connect-microsoft']").addEventListener("click", connectMicrosoft);
+  document.querySelector("[data-action='scheduler']").addEventListener("click", () => runAction("/api/run/scheduler"));
   document.querySelector("#task-form").addEventListener("submit", createTask);
+  document.querySelector("#approval-form").addEventListener("submit", createApproval);
 }
 
 function setLanguage(language) {
@@ -65,6 +68,10 @@ async function loadDashboard() {
 
 function connectGoogle() {
   window.location.assign("/oauth/google/start");
+}
+
+function connectMicrosoft() {
+  window.location.assign("/oauth/microsoft/start");
 }
 
 async function runAction(path) {
@@ -131,6 +138,41 @@ async function createTask(event) {
   }
 }
 
+async function createApproval(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const actionType = form.get("action_type");
+  const payload = {
+    provider: form.get("provider"),
+    to: form.get("to"),
+    subject: form.get("subject"),
+    body: form.get("text"),
+    text: form.get("text"),
+    title: form.get("subject") || form.get("action_type"),
+    event_id: form.get("event_id"),
+    start: form.get("start") ? new Date(form.get("start")).toISOString() : "",
+    end: form.get("end") ? new Date(form.get("end")).toISOString() : "",
+  };
+  setBusy(true);
+  try {
+    await api("/api/approvals", {
+      method: "POST",
+      body: JSON.stringify({
+        action_type: actionType,
+        title: t(actionType),
+        description: form.get("text") || t(actionType),
+        payload,
+      }),
+    });
+    event.currentTarget.reset();
+    await loadDashboard();
+  } catch (error) {
+    setNotice(error.message, true);
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function updateTask(id, patch) {
   setBusy(true);
   try {
@@ -161,6 +203,8 @@ async function deleteTask(id) {
 function render() {
   const data = state.dashboard;
   renderConnections(data.status.connections);
+  renderAnalytics(data.analytics);
+  renderApprovals(data.approvals);
   renderMetrics(data.metrics);
   renderIntegrations(data.status.configured, data.status.demo_mode);
   renderEmails(data.emails);
@@ -173,17 +217,28 @@ function renderConnections(connections) {
   const target = document.querySelector("#connection-list");
   const connectButton = document.querySelector("[data-action='connect-google']");
   const googleConnected = connections.gmail.connected || connections.calendar.connected;
+  const microsoftConnected = connections.outlook_mail.connected || connections.outlook_calendar.connected;
   const connectLabelKey = googleConnected ? "reconnectGoogle" : "connectGoogle";
+  const microsoftButton = document.querySelector("[data-action='connect-microsoft']");
+  const microsoftLabelKey = microsoftConnected ? "reconnectMicrosoft" : "connectMicrosoft";
   const connectLabel = connectButton.querySelector("[data-i18n]");
+  const microsoftLabel = microsoftButton.querySelector("[data-i18n]");
   connectLabel.dataset.i18n = connectLabelKey;
   connectLabel.textContent = t(connectLabelKey);
   connectButton.setAttribute("title", t(connectLabelKey));
+  microsoftLabel.dataset.i18n = microsoftLabelKey;
+  microsoftLabel.textContent = t(microsoftLabelKey);
+  microsoftButton.setAttribute("title", t(microsoftLabelKey));
   connectButton.dataset.disabled = String(!connections.google_oauth_configured);
   connectButton.disabled = !connections.google_oauth_configured;
+  microsoftButton.dataset.disabled = String(!connections.microsoft_oauth_configured);
+  microsoftButton.disabled = !connections.microsoft_oauth_configured;
 
   const rows = [
     ["gmail", t("gmail"), connections.gmail.connected, connections.gmail.read_only],
     ["calendar", t("googleCalendar"), connections.calendar.connected, connections.calendar.read_only],
+    ["outlook_mail", "Outlook Mail", connections.outlook_mail.connected, connections.outlook_mail.read_only],
+    ["outlook_calendar", "Outlook Calendar", connections.outlook_calendar.connected, connections.outlook_calendar.read_only],
     ["openai", t("ai"), connections.openai.connected, connections.openai.read_only],
   ];
 
@@ -204,6 +259,73 @@ function renderConnections(connections) {
       "beforeend",
       `<div class="connection-warning">${escapeHtml(t("oauthConfigMissing"))}</div>`
     );
+  }
+  if (!connections.microsoft_oauth_configured) {
+    target.insertAdjacentHTML(
+      "beforeend",
+      `<div class="connection-warning">Microsoft OAuth client is not configured</div>`
+    );
+  }
+}
+
+function renderAnalytics(analytics) {
+  const target = document.querySelector("#analytics-list");
+  const items = [
+    [t("messages"), analytics.email.requires_response, `${t("pending")} / ${analytics.email.target_response_minutes}m`],
+    [t("calendarConflicts"), analytics.calendar.conflicts, "0 target"],
+    [t("openTasks"), analytics.tasks.open, t("tasks")],
+    ["Focus", analytics.calendar.focus_blocks, t("calendar")],
+  ];
+  target.innerHTML = items.map(([label, value, detail]) => `
+    <div class="metric">
+      <span>${escapeHtml(label)}</span>
+      <strong>${value}</strong>
+      <small>${escapeHtml(detail)}</small>
+    </div>
+  `).join("");
+}
+
+function renderApprovals(approvals) {
+  const target = document.querySelector("#approval-list");
+  if (!approvals.length) {
+    target.innerHTML = empty(t("emptyTasks"));
+    return;
+  }
+  target.innerHTML = approvals.slice(0, 12).map((approval) => `
+    <article class="item approval-item ${approval.status}">
+      <div class="item-main">
+        <div class="item-row">
+          <strong>${escapeHtml(approval.title)}</strong>
+          <span class="badge neutral">${escapeHtml(approval.status)}</span>
+        </div>
+        <p>${escapeHtml(approval.description || approval.action_type)}</p>
+        ${approval.error ? `<p class="error-text">${escapeHtml(approval.error)}</p>` : ""}
+      </div>
+      ${approval.status === "pending" ? `
+        <div class="approval-actions">
+          <button type="button" data-approve="${approval.id}">${escapeHtml(t("approve"))}</button>
+          <button type="button" class="danger-button" data-reject="${approval.id}">${escapeHtml(t("reject"))}</button>
+        </div>
+      ` : ""}
+    </article>
+  `).join("");
+  target.querySelectorAll("[data-approve]").forEach((button) => {
+    button.addEventListener("click", () => approvalAction(button.dataset.approve, "approve"));
+  });
+  target.querySelectorAll("[data-reject]").forEach((button) => {
+    button.addEventListener("click", () => approvalAction(button.dataset.reject, "reject"));
+  });
+}
+
+async function approvalAction(id, action) {
+  setBusy(true);
+  try {
+    await api(`/api/approvals/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+    await loadDashboard();
+  } catch (error) {
+    setNotice(error.message, true);
+  } finally {
+    setBusy(false);
   }
 }
 
@@ -387,6 +509,10 @@ function readOAuthNotice() {
   if (params.get("oauth") === "success") {
     window.history.replaceState({}, "", window.location.pathname);
     return { text: window.AssistantI18n.appText("oauthSuccess", language), isError: false };
+  }
+  if (params.get("oauth") === "microsoft_success") {
+    window.history.replaceState({}, "", window.location.pathname);
+    return { text: "Microsoft account connected", isError: false };
   }
   if (params.get("oauth_error")) {
     const message = params.get("oauth_error");

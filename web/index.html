@@ -51,12 +51,63 @@
             <p class="section-kicker" data-i18n="status">Status</p>
             <h2 data-i18n="connectionStatus">Connection Status</h2>
           </div>
-          <button type="button" class="connect-button" data-action="connect-google" data-i18n-title="connectGoogle">
-            <span class="button-icon" aria-hidden="true">G</span>
-            <span data-i18n="connectGoogle">Connect Google Account</span>
-          </button>
+          <div class="connection-actions">
+            <button type="button" class="connect-button" data-action="connect-google" data-i18n-title="connectGoogle">
+              <span class="button-icon" aria-hidden="true">G</span>
+              <span data-i18n="connectGoogle">Connect Google Account</span>
+            </button>
+            <button type="button" class="connect-button secondary" data-action="connect-microsoft" data-i18n-title="connectMicrosoft">
+              <span class="button-icon" aria-hidden="true">M</span>
+              <span data-i18n="connectMicrosoft">Connect Microsoft Account</span>
+            </button>
+          </div>
         </div>
         <div id="connection-list" class="connection-grid" aria-live="polite"></div>
+      </section>
+
+      <section class="panel analytics-panel">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker" data-i18n="successCriteria">Success Criteria</p>
+            <h2 data-i18n="analytics">Analytics</h2>
+          </div>
+          <button type="button" data-action="scheduler" data-i18n-title="runScheduler">
+            <span class="button-icon" aria-hidden="true">&#8635;</span>
+            <span data-i18n="runScheduler">Run scheduler</span>
+          </button>
+        </div>
+        <div id="analytics-list" class="metrics analytics-grid" aria-live="polite"></div>
+      </section>
+
+      <section class="panel approvals-panel">
+        <div class="section-head">
+          <div>
+            <p class="section-kicker" data-i18n="humanApproval">Human Approval</p>
+            <h2 data-i18n="approvals">Approvals</h2>
+          </div>
+        </div>
+        <form id="approval-form" class="approval-form">
+          <select name="action_type" data-i18n-aria="actionType">
+            <option value="send_email" data-i18n="sendEmail">Send email</option>
+            <option value="create_focus_time" data-i18n="createFocusTime">Create focus time</option>
+            <option value="reschedule_event" data-i18n="rescheduleEvent">Reschedule event</option>
+            <option value="send_reminder" data-i18n="sendReminder">Send reminder</option>
+            <option value="send_prep_material" data-i18n="sendPrepMaterial">Send prep material</option>
+            <option value="coordinate_meeting" data-i18n="coordinateMeeting">Coordinate meeting</option>
+          </select>
+          <select name="provider" data-i18n-aria="provider">
+            <option value="google">Google</option>
+            <option value="outlook">Outlook</option>
+          </select>
+          <input name="to" type="email" data-i18n-placeholder="recipient" data-i18n-aria="recipient">
+          <input name="subject" type="text" data-i18n-placeholder="subject" data-i18n-aria="subject">
+          <input name="event_id" type="text" data-i18n-placeholder="eventId" data-i18n-aria="eventId">
+          <input name="start" type="datetime-local" data-i18n-aria="startTime">
+          <input name="end" type="datetime-local" data-i18n-aria="endTime">
+          <input name="text" type="text" data-i18n-placeholder="messageText" data-i18n-aria="messageText">
+          <button type="submit" data-i18n-title="createApproval"><span class="button-icon" aria-hidden="true">+</span></button>
+        </form>
+        <div id="approval-list" class="list" aria-live="polite"></div>
       </section>
 
       <section class="panel overview">

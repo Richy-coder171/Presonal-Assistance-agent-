@@ -537,3 +537,19 @@ def _merge_by_id(existing: list, incoming: list, limit: int) -> list[dict]:
     for item in incoming:
         merged[item.id] = item
     return [item.to_dict() for item in list(merged.values())[:limit]]
+
+
+def _approval_title(action_type: str) -> str:
+    return {
+        "send_briefing": "Send daily briefing",
+        "send_message": "Send message",
+        "send_email": "Send email",
+        "create_focus_time": "Create focus time",
+        "create_calendar_event": "Create calendar event",
+        "reschedule_event": "Reschedule event",
+        "delete_event": "Delete calendar event",
+        "coordinate_meeting": "Coordinate meeting",
+        "send_reminder": "Send reminder",
+        "send_prep_material": "Send preparation material",
+        "notify_participants": "Notify participants",
+    }.get(action_type, action_type.replace("_", " ").title())

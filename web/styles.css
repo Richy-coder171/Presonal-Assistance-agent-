@@ -281,6 +281,12 @@ h2 {
   min-height: 280px;
 }
 
+.analytics-panel,
+.approvals-panel {
+  grid-column: span 12;
+  min-height: 0;
+}
+
 .section-head {
   display: flex;
   align-items: center;
@@ -532,6 +538,55 @@ details pre {
   background: var(--surface-soft);
 }
 
+.approval-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 10px;
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-soft);
+}
+
+.approval-form input,
+.approval-form select {
+  width: 100%;
+  min-height: 42px;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.approval-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.approval-actions button {
+  padding: 0 12px;
+}
+
+.approval-item.failed {
+  border-inline-start: 4px solid var(--red);
+}
+
+.approval-item.completed {
+  border-inline-start: 4px solid var(--green);
+}
+
+.error-text {
+  color: var(--red);
+}
+
+.analytics-grid small {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+}
+
 .task-form input,
 .task-form select {
   width: 100%;
@@ -639,6 +694,10 @@ details pre {
     grid-template-columns: 1fr 1fr;
   }
 
+  .approval-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .task-form button {
     width: 100%;
   }
@@ -661,7 +720,8 @@ details pre {
   }
 
   .metrics,
-  .task-form {
+  .task-form,
+  .approval-form {
     grid-template-columns: 1fr;
   }
 
