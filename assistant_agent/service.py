@@ -8,7 +8,8 @@ from .classifier import build_briefing_text, classify_email, detect_conflicts, d
 from .config import Settings
 from .google_oauth import GoogleOAuthManager, GoogleTokenStore
 from .http_client import HttpError
-from .models import CalendarEvent, DailyBriefing, EmailItem, TaskItem, new_id, now_iso
+from .microsoft_oauth import MicrosoftOAuthManager, MicrosoftTokenStore
+from .models import ApprovalItem, CalendarEvent, DailyBriefing, EmailItem, TaskItem, new_id, now_iso
 from .providers import (
     CalendarProvider,
     CompositeMessenger,
@@ -30,7 +31,10 @@ class AssistantService:
         self.google_oauth = GoogleOAuthManager(settings, self.google_token_store)
         google = GoogleWorkspaceProvider(settings, self.google_token_store)
         self.google_provider = google
-        microsoft = Microsoft365Provider(settings)
+        self.microsoft_token_store = MicrosoftTokenStore(settings.ms_token_path)
+        self.microsoft_oauth = MicrosoftOAuthManager(settings, self.microsoft_token_store)
+        microsoft = Microsoft365Provider(settings, self.microsoft_token_store)
+        self.microsoft_provider = microsoft
         self.email_providers: list[EmailProvider] = [google, microsoft]
         self.calendar_providers: list[CalendarProvider] = [google, microsoft]
         self.messenger = CompositeMessenger(
@@ -59,10 +63,16 @@ class AssistantService:
             },
             "demo_mode": self.settings.demo_mode,
             "timezone": self.settings.timezone,
+            "scheduler": {
+                "enabled": self.settings.scheduler_enabled,
+                "briefing_hour": self.settings.briefing_hour,
+                "last_briefing_date": state.get("scheduler", {}).get("last_briefing_date", ""),
+            },
         }
 
     def connection_status(self) -> dict:
         google_status = self.google_oauth.connection_status()
+        microsoft_status = self.microsoft_oauth.connection_status()
         return {
             "gmail": {
                 "connected": google_status["gmail_connected"],
@@ -72,18 +82,47 @@ class AssistantService:
                 "connected": google_status["calendar_connected"],
                 "read_only": True,
             },
+            "outlook_mail": {
+                "connected": microsoft_status["mail_connected"],
+                "read_only": not microsoft_status["mail_send_enabled"],
+            },
+            "outlook_calendar": {
+                "connected": microsoft_status["calendar_connected"],
+                "read_only": not microsoft_status["calendar_write_enabled"],
+            },
             "openai": {
                 "connected": self.analyzer.configured,
                 "read_only": False,
             },
             "google_oauth_configured": google_status["oauth_configured"],
+            "microsoft_oauth_configured": microsoft_status["oauth_configured"],
+            "write_actions": {
+                "google_gmail": google_status["gmail_send_enabled"],
+                "google_calendar": google_status["calendar_write_enabled"],
+                "microsoft_mail": microsoft_status["mail_send_enabled"],
+                "microsoft_calendar": microsoft_status["calendar_write_enabled"],
+            },
         }
 
     def google_authorization_url(self, redirect_uri: str) -> str:
         return self.google_oauth.authorization_url(redirect_uri)
 
+    def microsoft_authorization_url(self, redirect_uri: str) -> str:
+        return self.microsoft_oauth.authorization_url(redirect_uri)
+
     def complete_google_oauth(self, *, code: str, state: str, error: str = "") -> dict:
         status = self.google_oauth.complete(code=code, state=state, error=error)
+        self._clear_demo_content()
+        email_result = self.refresh_emails()
+        calendar_result = self.refresh_calendar()
+        return {
+            "connections": status,
+            "emails": email_result,
+            "calendar": calendar_result,
+        }
+
+    def complete_microsoft_oauth(self, *, code: str, state: str, error: str = "") -> dict:
+        status = self.microsoft_oauth.complete(code=code, state=state, error=error)
         self._clear_demo_content()
         email_result = self.refresh_emails()
         calendar_result = self.refresh_calendar()
@@ -109,6 +148,8 @@ class AssistantService:
             "tasks": [item.to_dict() for item in sorted(tasks, key=lambda item: (item.status, item.due_at or ""))],
             "conflicts": conflicts,
             "latest_briefing": latest_briefing,
+            "approvals": self.list_approvals(),
+            "analytics": self.analytics(),
             "metrics": {
                 "urgent_emails": len(urgent),
                 "important_emails": len(important),
@@ -116,6 +157,164 @@ class AssistantService:
                 "calendar_conflicts": len(conflicts),
             },
         }
+
+    def analytics(self) -> dict:
+        state = self.store.load()
+        emails = [EmailItem.from_dict(item) for item in state["emails"]]
+        events = [CalendarEvent.from_dict(item) for item in state["events"]]
+        tasks = [TaskItem.from_dict(item) for item in state["tasks"]]
+        conflicts = detect_conflicts(events)
+        response_tasks = [
+            task for task in tasks
+            if task.source == "email" and task.status != "done"
+        ]
+        meetings = [event for event in events if event.attendees]
+        focus_blocks = [
+            event for event in events
+            if "focus" in event.title.casefold() or "מיקוד" in event.title
+        ]
+        return {
+            "email": {
+                "total": len(emails),
+                "urgent": len([item for item in emails if item.priority == "urgent"]),
+                "important": len([item for item in emails if item.priority == "important"]),
+                "requires_response": len([item for item in emails if item.requires_response]),
+                "pending_response_tasks": len(response_tasks),
+                "target_response_minutes": 30,
+            },
+            "calendar": {
+                "events": len(events),
+                "meetings": len(meetings),
+                "conflicts": len(conflicts),
+                "focus_blocks": len(focus_blocks),
+                "attendance_rate": None,
+                "target_attendance_rate": 0.95,
+            },
+            "tasks": {
+                "open": len([task for task in tasks if task.status != "done"]),
+                "done": len([task for task in tasks if task.status == "done"]),
+            },
+        }
+
+    def list_approvals(self) -> list[dict]:
+        state = self.store.load()
+        approvals = [ApprovalItem.from_dict(item) for item in state["approvals"]]
+        return [
+            item.to_dict()
+            for item in sorted(approvals, key=lambda item: item.created_at, reverse=True)
+        ]
+
+    def create_approval(self, payload: dict) -> ApprovalItem:
+        action_type = str(payload.get("action_type", "")).strip()
+        if not action_type:
+            raise ValueError("Approval action_type is required")
+        approval = ApprovalItem(
+            id=new_id("approval"),
+            action_type=action_type,
+            title=str(payload.get("title") or _approval_title(action_type)),
+            description=str(payload.get("description") or ""),
+            payload=dict(payload.get("payload", {})),
+            risk=str(payload.get("risk", "external_action")),
+        )
+        state = self.store.load()
+        state["approvals"] = [approval.to_dict(), *state["approvals"]]
+        self.store.save(state)
+        return approval
+
+    def approve_item(self, approval_id: str) -> ApprovalItem:
+        return self._update_approval(approval_id, approve=True)
+
+    def reject_item(self, approval_id: str) -> ApprovalItem:
+        return self._update_approval(approval_id, approve=False)
+
+    def run_scheduler_once(self, now: datetime | None = None) -> dict:
+        now = now or datetime.now(ZoneInfo(self.settings.timezone))
+        if not self.settings.scheduler_enabled:
+            return {"status": "disabled"}
+        if now.hour < self.settings.briefing_hour:
+            return {"status": "waiting", "briefing_hour": self.settings.briefing_hour}
+
+        state = self.store.load()
+        today = now.date().isoformat()
+        scheduler = dict(state.get("scheduler", {}))
+        if scheduler.get("last_briefing_date") == today:
+            return {"status": "already_generated", "date": today}
+
+        briefing = self.generate_briefing()
+        scheduler["last_briefing_date"] = today
+        state = self.store.load()
+        state["scheduler"] = scheduler
+        self.store.save(state)
+        approval = self.create_approval(
+            {
+                "action_type": "send_briefing",
+                "title": "Send daily briefing",
+                "description": "Send the generated daily briefing through configured messaging channels.",
+                "payload": {"briefing_id": briefing.id},
+                "risk": "external_message",
+            }
+        )
+        return {"status": "generated", "briefing": briefing.to_dict(), "approval": approval.to_dict()}
+
+    def _update_approval(self, approval_id: str, approve: bool) -> ApprovalItem:
+        state = self.store.load()
+        approvals = [ApprovalItem.from_dict(item) for item in state["approvals"]]
+        for approval in approvals:
+            if approval.id != approval_id:
+                continue
+            if approval.status != "pending":
+                raise ValueError("Approval is not pending")
+            if not approve:
+                approval.status = "rejected"
+                approval.completed_at = now_iso()
+            else:
+                approval.status = "approved"
+                approval.approved_at = now_iso()
+                try:
+                    approval.result = self._execute_approval(approval)
+                    approval.status = "completed"
+                    approval.completed_at = now_iso()
+                except Exception as exc:  # noqa: BLE001 - persisted for user review.
+                    approval.status = "failed"
+                    approval.error = str(exc)
+                    approval.completed_at = now_iso()
+            state["approvals"] = [item.to_dict() for item in approvals]
+            self.store.save(state)
+            return approval
+        raise KeyError(f"Approval not found: {approval_id}")
+
+    def _execute_approval(self, approval: ApprovalItem) -> dict:
+        payload = approval.payload
+        action = approval.action_type
+        if action == "send_briefing":
+            return self.send_latest_briefing(approved=True)
+        if action == "send_message":
+            return self.messenger.send(str(payload.get("text", "")))
+        if action == "send_email":
+            provider = self._provider_for_action(str(payload.get("provider", "google")))
+            return provider.send_email(
+                str(payload.get("to", "")),
+                str(payload.get("subject", "")),
+                str(payload.get("body", "")),
+            )
+        if action in {"create_focus_time", "create_calendar_event"}:
+            provider = self._provider_for_action(str(payload.get("provider", "google")))
+            return provider.create_event(payload)
+        if action == "reschedule_event":
+            provider = self._provider_for_action(str(payload.get("provider", "google")))
+            return provider.update_event(str(payload.get("event_id", "")), payload)
+        if action == "delete_event":
+            provider = self._provider_for_action(str(payload.get("provider", "google")))
+            return provider.delete_event(str(payload.get("event_id", "")))
+        if action in {"coordinate_meeting", "send_reminder", "send_prep_material", "notify_participants"}:
+            text = str(payload.get("text") or approval.description or approval.title)
+            return self.messenger.send(text)
+        raise ValueError(f"Unsupported approval action: {action}")
+
+    def _provider_for_action(self, provider: str):
+        if provider.lower() in {"outlook", "microsoft", "microsoft365"}:
+            return self.microsoft_provider
+        return self.google_provider
 
     def refresh_emails(self) -> dict:
         incoming: list[EmailItem] = []
