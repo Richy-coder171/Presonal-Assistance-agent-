@@ -219,6 +219,7 @@ function render() {
   renderConnections(data.status.connections);
   renderAnalytics(data.analytics);
   renderApprovals(data.approvals);
+  renderAuditLogs(data.audit_logs || []);
   renderMetrics(data.metrics);
   renderIntegrations(data.status.configured, data.status.demo_mode);
   renderPrioritySummary(data.emails);
@@ -227,6 +228,27 @@ function render() {
   renderEvents(data.events, data.conflicts);
   renderTasks(data.tasks);
   renderBriefing(data.latest_briefing);
+}
+
+function renderAuditLogs(logs) {
+  const target = document.querySelector("#audit-log-list");
+  if (!target) return;
+  if (!logs.length) {
+    target.innerHTML = empty(t("emptyAuditLogs"));
+    return;
+  }
+  target.innerHTML = logs.slice(0, 12).map((item) => `
+    <article class="item audit-item ${item.status === "failure" ? "failed" : ""}">
+      <div class="item-main">
+        <div class="item-row">
+          <strong>${escapeHtml(t(item.action) || item.action)}</strong>
+          <span class="badge neutral">${escapeHtml(item.status)}</span>
+        </div>
+        <p>${escapeHtml(item.message || item.error || item.provider || item.entity_type || "")}</p>
+      </div>
+      <time>${formatDate(item.created_at)}</time>
+    </article>
+  `).join("");
 }
 
 function renderStatusStrip(status) {
@@ -527,7 +549,8 @@ async function api(path, options = {}) {
   });
   const payload = await response.json();
   if (!response.ok) {
-    throw new Error(payload.error || t("apiError"));
+    const error = payload.error;
+    throw new Error(error?.message || error || t("apiError"));
   }
   return payload;
 }

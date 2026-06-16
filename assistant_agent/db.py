@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import Boolean, Column, ForeignKey, Index, String, Text, create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
+from sqlalchemy.pool import NullPool, StaticPool
 from sqlalchemy.types import JSON
 
 from .config import ROOT_DIR
@@ -156,10 +157,12 @@ def init_database(engine_or_url: Engine | str | None = None) -> Engine:
 def create_engine_for_url(database_url: str | None = None) -> Engine:
     url = normalize_database_url(database_url or default_sqlite_url())
     connect_args: dict[str, Any] = {}
+    engine_kwargs: dict[str, Any] = {}
     if url.startswith("sqlite:"):
         connect_args["check_same_thread"] = False
         _ensure_sqlite_parent(url)
-    return create_engine(url, future=True, connect_args=connect_args)
+        engine_kwargs["poolclass"] = StaticPool if url == "sqlite:///:memory:" else NullPool
+    return create_engine(url, future=True, connect_args=connect_args, **engine_kwargs)
 
 
 def session_factory(engine: Engine) -> sessionmaker[Session]:

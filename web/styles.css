@@ -368,7 +368,8 @@ h2 {
 }
 
 .analytics-panel,
-.approvals-panel {
+.approvals-panel,
+.audit-panel {
   grid-column: span 12;
   min-height: 0;
 }
@@ -699,6 +700,10 @@ details pre {
 }
 
 .approval-item.failed {
+  border-inline-start: 4px solid var(--red);
+}
+
+.audit-item.failed {
   border-inline-start: 4px solid var(--red);
 }
 

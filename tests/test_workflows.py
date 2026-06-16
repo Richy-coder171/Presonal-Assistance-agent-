@@ -236,7 +236,11 @@ class ServiceTests(unittest.TestCase):
 
     def test_approved_email_action_executes_only_after_queue_approval(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            settings = _settings(Path(directory) / "state.json")
+            settings = replace(
+                _settings(Path(directory) / "state.json"),
+                google_enable_write_actions=True,
+                google_access_token="access-token",
+            )
             service = AssistantService(settings, StateStore(settings.data_path))
             approval = service.create_approval(
                 {
