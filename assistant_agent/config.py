@@ -48,6 +48,13 @@ class Settings:
     google_redirect_uri: str = ""
     google_token_path: Path = ROOT_DIR / "data" / "google_oauth_tokens.json"
     google_oauth_state_path: Path = ROOT_DIR / "data" / "google_oauth_state.json"
+    google_enable_write_actions: bool = False
+    ms_redirect_uri: str = ""
+    ms_token_path: Path = ROOT_DIR / "data" / "microsoft_oauth_tokens.json"
+    ms_oauth_state_path: Path = ROOT_DIR / "data" / "microsoft_oauth_state.json"
+    ms_enable_write_actions: bool = False
+    scheduler_enabled: bool = True
+    briefing_hour: int = 8
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -87,6 +94,23 @@ class Settings:
                     str(ROOT_DIR / "data" / "google_oauth_state.json"),
                 )
             ),
+            google_enable_write_actions=_env_bool("GOOGLE_ENABLE_WRITE_ACTIONS", False),
+            ms_redirect_uri=os.getenv("MS_REDIRECT_URI", ""),
+            ms_token_path=Path(
+                os.getenv(
+                    "MS_TOKEN_PATH",
+                    str(ROOT_DIR / "data" / "microsoft_oauth_tokens.json"),
+                )
+            ),
+            ms_oauth_state_path=Path(
+                os.getenv(
+                    "MS_OAUTH_STATE_PATH",
+                    str(ROOT_DIR / "data" / "microsoft_oauth_state.json"),
+                )
+            ),
+            ms_enable_write_actions=_env_bool("MS_ENABLE_WRITE_ACTIONS", False),
+            scheduler_enabled=_env_bool("SCHEDULER_ENABLED", True),
+            briefing_hour=int(os.getenv("BRIEFING_HOUR", "8")),
         )
 
 

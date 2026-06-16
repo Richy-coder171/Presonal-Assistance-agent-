@@ -16,6 +16,8 @@ GOOGLE_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 CALENDAR_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
+GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
+CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 GOOGLE_READONLY_SCOPES = (GMAIL_READONLY_SCOPE, CALENDAR_READONLY_SCOPE)
 
 
@@ -127,6 +129,8 @@ class GoogleOAuthManager:
             or self.token_store.has_scope(GMAIL_READONLY_SCOPE),
             "calendar_connected": legacy_connected
             or self.token_store.has_scope(CALENDAR_READONLY_SCOPE),
+            "gmail_send_enabled": self.token_store.has_scope(GMAIL_SEND_SCOPE),
+            "calendar_write_enabled": self.token_store.has_scope(CALENDAR_EVENTS_SCOPE),
             "read_only": True,
         }
 
@@ -152,7 +156,7 @@ class GoogleOAuthManager:
                 "client_id": self.settings.google_client_id,
                 "redirect_uri": redirect_uri,
                 "response_type": "code",
-                "scope": " ".join(GOOGLE_READONLY_SCOPES),
+                "scope": " ".join(self._requested_scopes()),
                 "access_type": "offline",
                 "include_granted_scopes": "true",
                 "prompt": "consent",
@@ -190,7 +194,7 @@ class GoogleOAuthManager:
         if not response.get("access_token"):
             raise GoogleOAuthError("Google OAuth completed without an access token.")
         if not response.get("scope"):
-            response["scope"] = " ".join(GOOGLE_READONLY_SCOPES)
+            response["scope"] = " ".join(self._requested_scopes())
         self.token_store.save_token_response(response)
         return self.connection_status()
 
@@ -211,6 +215,16 @@ class GoogleOAuthManager:
         if expires_at <= datetime.now(timezone.utc):
             raise GoogleOAuthError("Google OAuth state expired. Start the connection again.")
         return pending
+
+    def _requested_scopes(self) -> tuple[str, ...]:
+        if not self.settings.google_enable_write_actions:
+            return GOOGLE_READONLY_SCOPES
+        return (
+            GMAIL_READONLY_SCOPE,
+            CALENDAR_READONLY_SCOPE,
+            GMAIL_SEND_SCOPE,
+            CALENDAR_EVENTS_SCOPE,
+        )
 
 
 def _parse_datetime(value: str) -> datetime:

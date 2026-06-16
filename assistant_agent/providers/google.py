@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import base64
 import email.utils
+from email.message import EmailMessage
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote, urlencode
 
 from ..config import Settings
 from ..google_oauth import (
+    CALENDAR_EVENTS_SCOPE,
     CALENDAR_READONLY_SCOPE,
+    GMAIL_SEND_SCOPE,
     GMAIL_READONLY_SCOPE,
     GOOGLE_TOKEN_URL,
     GoogleTokenStore,
@@ -53,6 +56,14 @@ class GoogleWorkspaceProvider(EmailProvider, CalendarProvider):
             or self.token_store.has_scope(CALENDAR_READONLY_SCOPE)
         )
 
+    @property
+    def can_send_email(self) -> bool:
+        return bool(self.settings.google_access_token or self.token_store.has_scope(GMAIL_SEND_SCOPE))
+
+    @property
+    def can_write_calendar(self) -> bool:
+        return bool(self.settings.google_access_token or self.token_store.has_scope(CALENDAR_EVENTS_SCOPE))
+
     def list_recent_emails(self, limit: int = 25) -> list[EmailItem]:
         token = self._token()
         query = urlencode({"maxResults": str(limit), "q": "newer_than:7d in:inbox"})
@@ -87,6 +98,54 @@ class GoogleWorkspaceProvider(EmailProvider, CalendarProvider):
             headers={"Authorization": f"Bearer {token}"},
         )
         return [_google_event_to_model(event) for event in payload.get("items", [])]
+
+    def send_email(self, to: str, subject: str, body: str) -> dict:
+        if not self.can_send_email:
+            raise RuntimeError("Google Gmail send scope is not connected.")
+        message = EmailMessage()
+        message["To"] = to
+        message["Subject"] = subject
+        message.set_content(body)
+        raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8").rstrip("=")
+        return request_json(
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+            method="POST",
+            headers={"Authorization": f"Bearer {self._token()}"},
+            body={"raw": raw},
+        )
+
+    def create_event(self, payload: dict[str, Any]) -> dict:
+        if not self.can_write_calendar:
+            raise RuntimeError("Google Calendar write scope is not connected.")
+        calendar_id = quote(self.settings.google_calendar_id or "primary", safe="")
+        return request_json(
+            f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events",
+            method="POST",
+            headers={"Authorization": f"Bearer {self._token()}"},
+            body=_event_payload(payload),
+        )
+
+    def update_event(self, event_id: str, payload: dict[str, Any]) -> dict:
+        if not self.can_write_calendar:
+            raise RuntimeError("Google Calendar write scope is not connected.")
+        calendar_id = quote(self.settings.google_calendar_id or "primary", safe="")
+        return request_json(
+            f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events/{quote(event_id, safe='')}",
+            method="PATCH",
+            headers={"Authorization": f"Bearer {self._token()}"},
+            body=_event_payload(payload),
+        )
+
+    def delete_event(self, event_id: str) -> dict:
+        if not self.can_write_calendar:
+            raise RuntimeError("Google Calendar write scope is not connected.")
+        calendar_id = quote(self.settings.google_calendar_id or "primary", safe="")
+        request_json(
+            f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events/{quote(event_id, safe='')}",
+            method="DELETE",
+            headers={"Authorization": f"Bearer {self._token()}"},
+        )
+        return {"deleted": event_id}
 
     def _token(self) -> str:
         if self.settings.google_access_token:
@@ -170,3 +229,22 @@ def _google_event_to_model(data: dict[str, Any]) -> CalendarEvent:
         location=data.get("location", ""),
         description=data.get("description", ""),
     )
+
+
+def _event_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    event = {
+        "summary": payload.get("title") or payload.get("summary") or "Focus time",
+        "description": payload.get("description", ""),
+        "location": payload.get("location", ""),
+    }
+    if payload.get("start"):
+        event["start"] = {"dateTime": payload["start"]}
+    if payload.get("end"):
+        event["end"] = {"dateTime": payload["end"]}
+    attendees = payload.get("attendees") or []
+    if attendees:
+        event["attendees"] = [{"email": email} for email in attendees]
+    reminders = payload.get("reminders")
+    if reminders:
+        event["reminders"] = reminders
+    return event

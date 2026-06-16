@@ -10,6 +10,8 @@ DEFAULT_STATE = {
     "events": [],
     "tasks": [],
     "briefings": [],
+    "approvals": [],
+    "scheduler": {},
 }
 
 
@@ -37,4 +39,3 @@ class StateStore:
 
 def _fresh_state() -> dict[str, Any]:
     return {key: list(value) for key, value in DEFAULT_STATE.items()}
-

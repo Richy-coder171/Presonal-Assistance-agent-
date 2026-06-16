@@ -8,6 +8,7 @@ from uuid import uuid4
 
 Priority = Literal["urgent", "important", "routine", "fyi"]
 TaskStatus = Literal["open", "done"]
+ApprovalStatus = Literal["pending", "approved", "rejected", "completed", "failed"]
 
 
 def now_iso() -> str:
@@ -137,3 +138,38 @@ class DailyBriefing:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+
+@dataclass
+class ApprovalItem:
+    id: str
+    action_type: str
+    title: str
+    description: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    status: ApprovalStatus = "pending"
+    risk: str = "external_action"
+    created_at: str = field(default_factory=now_iso)
+    approved_at: str | None = None
+    completed_at: str | None = None
+    result: dict[str, Any] = field(default_factory=dict)
+    error: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ApprovalItem":
+        return cls(
+            id=str(data.get("id") or new_id("approval")),
+            action_type=str(data.get("action_type", "")),
+            title=str(data.get("title", "")),
+            description=str(data.get("description", "")),
+            payload=dict(data.get("payload", {})),
+            status=data.get("status", "pending"),
+            risk=str(data.get("risk", "external_action")),
+            created_at=str(data.get("created_at") or now_iso()),
+            approved_at=data.get("approved_at"),
+            completed_at=data.get("completed_at"),
+            result=dict(data.get("result", {})),
+            error=str(data.get("error", "")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
