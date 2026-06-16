@@ -44,6 +44,16 @@ class AssistantService:
 
     def status(self) -> dict:
         state = self.store.load()
+        local_now = datetime.now(ZoneInfo(self.settings.timezone))
+        scheduler_status = "disabled"
+        if self.settings.scheduler_enabled:
+            last_briefing_date = state.get("scheduler", {}).get("last_briefing_date", "")
+            if last_briefing_date == local_now.date().isoformat():
+                scheduler_status = "briefing_generated_today"
+            elif local_now.hour < self.settings.briefing_hour:
+                scheduler_status = "waiting_for_briefing_hour"
+            else:
+                scheduler_status = "ready_to_generate"
         return {
             "configured": {
                 "gmail_or_google_calendar": self.google_provider.configured,
@@ -63,8 +73,12 @@ class AssistantService:
             },
             "demo_mode": self.settings.demo_mode,
             "timezone": self.settings.timezone,
+            "current_datetime": local_now.isoformat(),
+            "current_date": local_now.date().isoformat(),
+            "current_time": local_now.strftime("%H:%M:%S"),
             "scheduler": {
                 "enabled": self.settings.scheduler_enabled,
+                "status": scheduler_status,
                 "briefing_hour": self.settings.briefing_hour,
                 "last_briefing_date": state.get("scheduler", {}).get("last_briefing_date", ""),
             },
@@ -187,8 +201,8 @@ class AssistantService:
                 "meetings": len(meetings),
                 "conflicts": len(conflicts),
                 "focus_blocks": len(focus_blocks),
-                "attendance_rate": None,
-                "target_attendance_rate": 0.95,
+                "meeting_attendance_rate": None,
+                "target_meeting_attendance_rate": 0.95,
             },
             "tasks": {
                 "open": len([task for task in tasks if task.status != "done"]),

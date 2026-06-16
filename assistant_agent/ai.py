@@ -40,7 +40,10 @@ class OpenAIAnalyzer:
             "You are a native Hebrew executive assistant. Classify the email "
             "as urgent, important, routine, or fyi. Return compact JSON only "
             "with keys: priority, requires_response, summary, draft_reply. "
-            "The summary and draft_reply must be in professional warm Hebrew."
+            "The summary and draft_reply must be in professional, warm, business Hebrew. "
+            "Avoid literal translations and robotic phrasing. Draft replies must be polite, "
+            "concise, ready for human approval, and must not claim that an email was sent "
+            "or a calendar change was made."
         )
 
         try:
@@ -97,4 +100,3 @@ def _response_text(response: Any) -> str:
                     if isinstance(value, str):
                         return value.strip()
     return ""
-

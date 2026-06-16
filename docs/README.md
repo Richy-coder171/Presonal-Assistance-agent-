@@ -4,6 +4,7 @@ This folder holds supporting material for the Personal Assistant Agent.
 
 ## Contents
 
+- `CLIENT_READINESS_CHECKLIST.md`: pre-delivery checklist for screenshots, demo video, OAuth setup, safety, tests, and deployment notes.
 - `screenshots/`: dashboard captures for English, Hebrew, desktop, and mobile layouts.
 
 ## Documentation Rules
@@ -20,4 +21,3 @@ This folder holds supporting material for the Personal Assistant Agent.
 - Approval workflow design
 - Deployment runbook
 - Security and audit-log design
-

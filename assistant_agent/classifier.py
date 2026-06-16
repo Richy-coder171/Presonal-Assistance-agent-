@@ -18,6 +18,9 @@ URGENT_TERMS = {
     "בהול",
     "מיידי",
     "היום",
+    "עד היום",
+    "עד הצהריים",
+    "בהקדם",
     "תקלה",
     "חסום",
     "אישור דחוף",
@@ -33,6 +36,8 @@ IMPORTANT_TERMS = {
     "meeting",
     "board",
     "budget",
+    "review",
+    "vendor",
     "חוזה",
     "חשבונית",
     "תשלום",
@@ -41,6 +46,12 @@ IMPORTANT_TERMS = {
     "פגישה",
     "תקציב",
     "הצעה",
+    "הנהלה",
+    "דירקטוריון",
+    "ספק",
+    "מסמך",
+    "דוח",
+    "מצגת",
 }
 
 FYI_TERMS = {
@@ -121,22 +132,23 @@ def draft_hebrew_reply(email: EmailItem, priority: str) -> str:
 
     if priority == "urgent":
         body = (
-            "תודה על העדכון. קיבלתי את הנושא הדחוף ואבדוק אותו בעדיפות גבוהה. "
-            "אעדכן בהקדם עם סטטוס והצעדים הבאים."
+            "תודה על העדכון. קיבלתי את הפנייה ואטפל בה בעדיפות גבוהה. "
+            "אבדוק את הפרטים מול הגורמים הרלוונטיים ואחזור עם תשובה מסודרת בהקדם, כדי שלא נעכב את התהליך."
         )
     elif "meeting" in _normalize(subject) or "פגישה" in subject:
         body = (
-            "תודה, קיבלתי את הבקשה לתיאום. אבדוק את היומן ואחזור עם חלונות זמן מתאימים."
+            "תודה, קיבלתי את הבקשה לתיאום. אבדוק את היומן ואציע חלונות זמן מתאימים. "
+            "אם יש משתתפים שחייבים להיות בפגישה, אשמח לקבל את הרשימה כדי לתאם בצורה יעילה."
         )
     elif priority == "important":
         body = (
-            "תודה על ההודעה. קיבלתי את הפרטים ואעבור עליהם היום. "
-            "אם יש דדליין מסוים, אשמח לדעת כדי לתעדף נכון."
+            "תודה על המייל. קיבלתי את הפרטים ואעבור עליהם היום. "
+            "אם יש מועד יעד מסוים או מסמך נוסף שכדאי לצרף, אשמח שתשלחו לי כדי שאוכל לקדם את הטיפול בצורה מסודרת."
         )
     else:
-        body = "תודה על ההודעה. קיבלתי ואחזור עם מענה מסודר בהקדם."
+        body = "תודה, קיבלתי את ההודעה. אבדוק את הנושא ואחזור עם מענה מסודר בהקדם."
 
-    return f"שלום {sender},\n\n{body}\n\nבברכה"
+    return f"שלום {sender},\n\n{body}\n\nבברכה,\nהעוזר האישי"
 
 
 def detect_conflicts(events: list[CalendarEvent]) -> list[dict]:
@@ -175,20 +187,30 @@ def build_briefing_text(
     todays_events = [event for event in events if _is_today(event.start, timezone)]
 
     lines = [
-        f"בוקר טוב. דוח יומי לתאריך {now.strftime('%d/%m/%Y')}.",
+        f"בוקר טוב, הנה הדוח היומי לתאריך {now.strftime('%d/%m/%Y')}.",
+        "ריכזתי את הנושאים שדורשים תשומת לב, לצד היומן והמשימות הפתוחות.",
         "",
-        f"פריטים דחופים: {len(urgent)}",
+        f"עדיפויות דחופות: {len(urgent)}",
     ]
-    lines.extend(f"- {summarize_email(item)}" for item in urgent[:5])
+    if urgent:
+        lines.extend(f"- {summarize_email(item)}" for item in urgent[:5])
+    else:
+        lines.append("- אין פריטים דחופים כרגע.")
 
     lines.append("")
-    lines.append(f"פריטים חשובים: {len(important)}")
-    lines.extend(f"- {summarize_email(item)}" for item in important[:5])
+    lines.append(f"פריטים חשובים למעקב: {len(important)}")
+    if important:
+        lines.extend(f"- {summarize_email(item)}" for item in important[:5])
+    else:
+        lines.append("- אין פריטים חשובים שממתינים לטיפול.")
 
     lines.append("")
-    lines.append(f"יומן היום: {len(todays_events)} פגישות")
-    for event in todays_events[:8]:
-        lines.append(f"- {_format_time(event.start, timezone)}-{_format_time(event.end, timezone)} {event.title}")
+    lines.append(f"יומן היום: {len(todays_events)} פגישות ואירועים")
+    if todays_events:
+        for event in todays_events[:8]:
+            lines.append(f"- {_format_time(event.start, timezone)}-{_format_time(event.end, timezone)} {event.title}")
+    else:
+        lines.append("- אין פגישות ביומן להיום.")
 
     lines.append("")
     if conflicts:
@@ -196,16 +218,19 @@ def build_briefing_text(
         for conflict in conflicts[:4]:
             lines.append(f"- {' מול '.join(conflict['titles'])}")
     else:
-        lines.append("קונפליקטים ביומן: אין")
+        lines.append("קונפליקטים ביומן: אין קונפליקטים פתוחים.")
 
     lines.append("")
     lines.append(f"משימות פתוחות: {len(open_tasks)}")
-    for task in open_tasks[:6]:
-        due = f" עד {_format_time(task.due_at, timezone)}" if task.due_at else ""
-        lines.append(f"- {task.title}{due}")
+    if open_tasks:
+        for task in open_tasks[:6]:
+            due = f" עד {_format_time(task.due_at, timezone)}" if task.due_at else ""
+            lines.append(f"- {task.title}{due}")
+    else:
+        lines.append("- אין משימות פתוחות כרגע.")
 
     lines.append("")
-    lines.append("המלצה: להתחיל בפריטים הדחופים, לשמור חלון מיקוד אחד, ולסגור תגובות קצרות לפני הצהריים.")
+    lines.append("המלצה: להתחיל בפריטים הדחופים, לפתור קונפליקטים ביומן לפני תחילת הפגישות, ולשמור חלון מיקוד אחד לעבודה אסטרטגית.")
     return "\n".join(lines).strip()
 
 
@@ -247,4 +272,3 @@ def _format_time(value: str | None, timezone: str) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=ZoneInfo(timezone))
     return dt.astimezone(ZoneInfo(timezone)).strftime("%H:%M")
-

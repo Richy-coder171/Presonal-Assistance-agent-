@@ -27,6 +27,59 @@ from assistant_agent.storage import StateStore
 
 
 class ClassifierTests(unittest.TestCase):
+    def test_priority_classification_covers_client_demo_categories(self) -> None:
+        cases = [
+            (
+                EmailItem(
+                    id="urgent",
+                    subject="דחוף: אישור הצעת מחיר היום",
+                    sender="client@example.com",
+                    received_at=datetime.now(timezone.utc).isoformat(),
+                    snippet="אפשר לאשר עד הצהריים?",
+                ),
+                "urgent",
+                True,
+            ),
+            (
+                EmailItem(
+                    id="important",
+                    subject="חשבונית ותשלום לספק",
+                    sender="finance@example.com",
+                    received_at=datetime.now(timezone.utc).isoformat(),
+                    snippet="מצורפת חשבונית לאישור.",
+                ),
+                "important",
+                True,
+            ),
+            (
+                EmailItem(
+                    id="routine",
+                    subject="Office delivery window",
+                    sender="service@example.com",
+                    received_at=datetime.now(timezone.utc).isoformat(),
+                    snippet="Could you confirm whether tomorrow afternoon works?",
+                ),
+                "routine",
+                True,
+            ),
+            (
+                EmailItem(
+                    id="fyi",
+                    subject="עדכון שבועי לידיעה",
+                    sender="no-reply@example.com",
+                    received_at=datetime.now(timezone.utc).isoformat(),
+                    snippet="לידיעה בלבד. אין צורך בפעולה.",
+                ),
+                "fyi",
+                False,
+            ),
+        ]
+        for email, expected_priority, expected_response in cases:
+            with self.subTest(email=email.id):
+                priority, requires_response = classify_email(email)
+                self.assertEqual(priority, expected_priority)
+                self.assertEqual(requires_response, expected_response)
+
     def test_urgent_hebrew_email_requires_response(self) -> None:
         email = EmailItem(
             id="e1",
@@ -93,6 +146,43 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(result["sent"], [])
             self.assertEqual(result["errors"][0]["channel"], "approval")
 
+    def test_approval_queue_can_reject_pending_action(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = _settings(Path(directory) / "state.json")
+            service = AssistantService(settings, StateStore(settings.data_path))
+            approval = service.create_approval(
+                {
+                    "action_type": "send_message",
+                    "title": "Send client update",
+                    "payload": {"text": "Draft only"},
+                }
+            )
+            queued = service.list_approvals()
+            self.assertEqual(queued[0]["status"], "pending")
+            self.assertEqual(queued[0]["id"], approval.id)
+
+            rejected = service.reject_item(approval.id)
+            self.assertEqual(rejected.status, "rejected")
+
+    def test_risky_email_action_does_not_execute_while_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = _settings(Path(directory) / "state.json")
+            service = AssistantService(settings, StateStore(settings.data_path))
+            with patch.object(service.google_provider, "send_email") as send_email:
+                approval = service.create_approval(
+                    {
+                        "action_type": "send_email",
+                        "payload": {
+                            "provider": "google",
+                            "to": "client@example.com",
+                            "subject": "Draft",
+                            "body": "Draft body",
+                        },
+                    }
+                )
+                self.assertEqual(approval.status, "pending")
+                send_email.assert_not_called()
+
     def test_scheduler_creates_briefing_approval_once_per_day(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = _settings(Path(directory) / "state.json")
@@ -139,6 +229,35 @@ class ServiceTests(unittest.TestCase):
             connections = service.connection_status()
             self.assertTrue(connections["gmail"]["connected"])
             self.assertTrue(connections["calendar"]["connected"])
+
+    def test_demo_mode_runs_without_oauth_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = _settings(Path(directory) / "state.json")
+            service = AssistantService(settings, StateStore(settings.data_path))
+            email_result = service.refresh_emails()
+            calendar_result = service.refresh_calendar()
+            briefing = service.generate_briefing()
+
+            self.assertTrue(email_result["used_demo"])
+            self.assertTrue(calendar_result["used_demo"])
+            self.assertEqual(email_result["errors"], [])
+            self.assertEqual(calendar_result["errors"], [])
+            self.assertIn("בוקר טוב", briefing.text)
+            self.assertFalse(service.connection_status()["gmail"]["connected"])
+            self.assertFalse(service.connection_status()["outlook_mail"]["connected"])
+
+    def test_status_includes_runtime_and_scheduler_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = _settings(Path(directory) / "state.json")
+            service = AssistantService(settings, StateStore(settings.data_path))
+            status = service.status()
+
+            self.assertTrue(status["demo_mode"])
+            self.assertIn("current_datetime", status)
+            self.assertIn("current_date", status)
+            self.assertIn("current_time", status)
+            self.assertIn(status["scheduler"]["status"], {"waiting_for_briefing_hour", "ready_to_generate"})
+            self.assertIn("connections", status)
 
 
 class GoogleOAuthTests(unittest.TestCase):
